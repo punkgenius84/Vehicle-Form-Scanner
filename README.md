@@ -1,4 +1,4 @@
-# Vehicle Form Scanner
+# Christina’s Way Scanner
 
 A simple Android-first vehicle intake form for office staff.
 
