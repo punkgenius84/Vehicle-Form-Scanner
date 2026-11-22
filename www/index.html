@@ -27,6 +27,8 @@
         <div class="divider-text">OR USE A PHOTO</div>
         <label class="f" for="vin-photo">Photograph the VIN text on the windshield or driver-door label</label>
         <input id="vin-photo" type="file" accept="image/*" capture="environment">
+        <label class="btn ghost block" for="vin-gallery">Choose photo from gallery</label>
+        <input id="vin-gallery" type="file" accept="image/*" hidden>
         <div class="muted">OCR is the fallback when there is no readable barcode. Recognition runs on this device; the photo is not uploaded or saved by this app.</div>
         <img id="vin-preview" class="vin-preview" alt="VIN photo preview" hidden>
         <button class="btn block" id="vin-ocr" type="button">Read VIN from photo</button>
@@ -45,10 +47,24 @@
         <div class="label">TIRE PRESSURE LABEL</div>
         <label class="f" for="tire-photo">Photograph the tire and loading label (usually on the driver door jamb)</label>
         <input id="tire-photo" type="file" accept="image/*" capture="environment">
+        <label class="btn ghost block" for="tire-gallery">Choose photo from gallery</label>
+        <input id="tire-gallery" type="file" accept="image/*" hidden>
         <img id="tire-preview" class="vin-preview" alt="Tire label photo preview" hidden>
         <button class="btn block" id="tire-ocr" type="button">Read tire label</button>
         <div id="tire-status" class="muted" aria-live="polite">Fills front, rear and spare tire sizes and cold pressures, seating capacity and max load. Nothing else on the form is changed.</div>
         <details id="tire-raw-box" class="muted" hidden><summary>See what OCR actually read</summary><pre id="tire-raw" class="ocr-raw"></pre></details>
+      </div>
+
+      <div class="card stack">
+        <div class="label">ODOMETER</div>
+        <label class="f" for="odo-photo">Photograph the odometer on the dash</label>
+        <input id="odo-photo" type="file" accept="image/*" capture="environment">
+        <label class="btn ghost block" for="odo-gallery">Choose photo from gallery</label>
+        <input id="odo-gallery" type="file" accept="image/*" hidden>
+        <img id="odo-preview" class="vin-preview" alt="Odometer photo preview" hidden>
+        <button class="btn block" id="odo-ocr" type="button">Read odometer</button>
+        <div id="odo-status" class="muted" aria-live="polite">Light the dash first (open the driver door or key on, engine off), then photograph the odometer. Fills Mileage only.</div>
+        <details id="odo-raw-box" class="muted" hidden><summary>See what OCR actually read</summary><pre id="odo-raw" class="ocr-raw"></pre></details>
       </div>
 
       <div id="msg" class="notice" hidden></div>

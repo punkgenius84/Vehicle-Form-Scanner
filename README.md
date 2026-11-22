@@ -10,8 +10,10 @@ The scan panel is the tow app's VIN panel, unchanged: **Start barcode scan**, **
 2. If the photo was of a door sticker, the text the OCR already read is also checked for **GVWR, front and rear GAWR, build month/year, tire size and cold tire pressure**. If no VIN could be read in that photo, the values are still added but flagged "confirm same vehicle".
 3. If NHTSA has no curb weight or wheelbase, typical values from the tow app's vehicle database are used when the model is listed, labelled "Typical for … - verify".
 4. **Tire pressure label**: its own photo spot. Take a photo of the tire and loading label, tap **Read tire label**, and it fills front, rear and spare tire sizes and cold pressures, seating capacity and max occupants + cargo weight. Only those fields change; everything else on the form stays. It works before or after the VIN scan, and the values are saved with the vehicle once the VIN is on the form.
-5. Every field is editable and saves automatically. **Copy all** / **Share** send the info.
-6. **Last 6 scans** are stored on the phone. Tap one to reload it, ✕ to remove it, **Clear recent scans** twice to clear all.
+5. **Odometer**: photograph the lit dash (driver door open or key on, engine off) and tap **Read odometer**. It fills **Mileage** only, skipping trip, range, clock and temperature numbers. A km odometer is converted to miles and the note under the field says so.
+6. **Gallery**: the VIN photo, tire label and odometer spots each have **Choose photo from gallery** as well as the camera. A gallery photo goes through the same reader as a camera photo.
+7. Every field is editable and saves automatically. **Copy all** / **Share** send the info.
+8. **Last 6 scans** are stored on the phone. Tap one to reload it, ✕ to remove it, **Clear recent scans** twice to clear all.
 
 The small note under each field says where the value came from.
 

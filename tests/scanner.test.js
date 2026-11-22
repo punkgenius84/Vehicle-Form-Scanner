@@ -359,3 +359,80 @@ test('old saved scans with a single tire size/pressure still load', () => {
   assert.equal(val(w.document, 'tireSizeFront'), 'P225/45R19');
   assert.equal(val(w.document, 'psiFront'), '36');
 });
+
+test('odometer reading is picked out of the rest of the dash', () => {
+  const { window: w } = boot();
+  const p = (t) => JSON.parse(JSON.stringify(w.__vin.parseOdometer(t)));
+  assert.deepEqual(p('ODO 123456 mi'), { mileage: '123456' });
+  assert.deepEqual(p('TRIP A 245.7 mi\n10:42 AM 72°F\nODO 87,215 MI\nRANGE 312 mi'), { mileage: '87215' });
+  assert.deepEqual(p('RANGE 412 MILES 34 MPG\n 98765'), { mileage: '98765' }, 'unlabelled: the big number that is not range/mpg');
+  assert.deepEqual(p('12:05 PM  23°C  ODO 160934 km'), { mileage: '100000', _hint: 'From odometer photo: 160,934 km converted to miles' });
+  assert.deepEqual(p('TRIP 12.3'), {});
+  assert.deepEqual(p(''), {});
+});
+
+test('odometer photo fills Mileage only; gallery photos work for VIN, tire and odometer', async () => {
+  let ocrText = 'TRIP A 245.7 mi ODO 87,215 MI RANGE 312 mi';
+  const native = { scanLiveBarcode: () => Promise.resolve({ cancelled: false, vin: VIN2, rawValue: VIN2 }), recognizeText: () => Promise.resolve({ text: ocrText }) };
+  const { window: w } = boot({ native });
+  const d = w.document;
+  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
+  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
+  const RealImage = w.Image;
+  w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 100 }); Object.defineProperty(img, 'naturalHeight', { value: 50 }); setTimeout(() => img.onload(), 0); return img; };
+  w.URL.createObjectURL = () => 'blob:g'; w.URL.revokeObjectURL = () => {};
+  const pick = (id) => {
+    const input = d.querySelector(id);
+    Object.defineProperty(input, 'files', { value: [new w.File(['x'], 'p.jpg', { type: 'image/jpeg' })], configurable: true });
+    input.dispatchEvent(new w.Event('change', { bubbles: true }));
+  };
+
+  // Gallery inputs have no camera "capture" setting, so Android opens the photo picker.
+  for (const id of ['#vin-gallery', '#tire-gallery', '#odo-gallery']) {
+    assert.equal(d.querySelector(id).hasAttribute('capture'), false, id);
+    assert.ok(d.querySelector('label[for="' + id.slice(1) + '"]'), id + ' has a button');
+  }
+
+  click(w, d.querySelector('#vin-barcode-start'));
+  await tick();
+  const before = JSON.stringify(w.__vin.current().fields);
+
+  // Odometer from the gallery.
+  pick('#odo-gallery');
+  assert.match(d.querySelector('#odo-status').textContent, /Tap “Read odometer”/);
+  click(w, d.querySelector('#odo-ocr'));
+  await tick(); await tick();
+  assert.equal(val(d, 'mileage'), '87215');
+  assert.match(d.querySelector('#f-mileage').parentNode.textContent, /From odometer photo/);
+  const after = Object.assign({}, w.__vin.current().fields); delete after.mileage;
+  assert.equal(JSON.stringify(after), before, 'nothing else changed');
+  assert.equal(w.__vin.history()[0].fields.mileage, '87215');
+  assert.match(d.querySelector('#history').textContent, /87,215 mi/);
+
+  // VIN photo from the gallery: same reader as the camera photo, waits for the button.
+  let reads = 0;
+  native.recognizeText = () => { reads++; return Promise.resolve({ text: 'VIN ' + VIN }); };
+  pick('#vin-gallery');
+  assert.equal(reads, 0);
+  assert.match(d.querySelector('#vin-ocr-status').textContent, /Tap “Read VIN from photo”/);
+  assert.equal(d.querySelector('#vin-preview').hidden, false);
+  click(w, d.querySelector('#vin-ocr'));
+  await tick(); await tick();
+  assert.equal(reads, 1);
+  assert.equal(val(d, 'vin'), VIN);
+  assert.equal(val(d, 'source'), 'Photo (OCR)');
+
+  // Tire label from the gallery.
+  native.recognizeText = () => Promise.resolve({ text: 'FRONT P245/60R18 35 PSI\nREAR P245/60R18 35 PSI' });
+  pick('#tire-gallery');
+  click(w, d.querySelector('#tire-ocr'));
+  await tick(); await tick();
+  assert.equal(val(d, 'psiFront'), '35');
+
+  // New scan clears all photos.
+  click(w, d.querySelector('#new-scan'));
+  assert.equal(d.querySelector('#odo-raw-box').hidden, true);
+  assert.equal(d.querySelector('#odo-preview').hidden, true);
+  assert.equal(d.querySelector('#vin-preview').hidden, true);
+  assert.match(d.querySelector('#odo-status').textContent, /Light the dash first/);
+});

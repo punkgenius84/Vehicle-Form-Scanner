@@ -435,7 +435,7 @@
     { title: 'VEHICLE', fields: [
       ['vin', 'VIN', 'full'], ['year', 'Year'], ['make', 'Make'], ['model', 'Model'], ['trim', 'Trim'],
       ['series', 'Series'], ['body', 'Body style'], ['vehicleType', 'Vehicle type'], ['doors', 'Doors'],
-      ['mfgDate', 'Built (month/year)', 'full']] },
+      ['mfgDate', 'Built (month/year)'], ['mileage', 'Mileage (odometer)', 'num']] },
     { title: 'WEIGHT & SIZE', fields: [
       ['gvwr', 'GVWR (lb)', 'num'], ['curb', 'Curb weight (lb)', 'num'], ['gawrFront', 'GAWR front (lb)', 'num'],
       ['gawrRear', 'GAWR rear (lb)', 'num'], ['gvwrClass', 'GVWR class (NHTSA)', 'full'], ['wheelbase', 'Wheelbase (in)', 'num'],
@@ -552,6 +552,36 @@
     }
     Object.keys(out).forEach(function (k) { out[k] = String(out[k]); });
     return out;
+  }
+
+  /* ---------- odometer photo ---------- */
+  // Picks the odometer reading out of whatever else the dash shows (trip, range, time, temperature, mpg).
+  function parseOdometer(raw) {
+    var flat = String(raw || '').replace(/\\n/g, '\n').toUpperCase().replace(/\s+/g, ' ');
+    var re = /\d[\d,]*(?:\.\d+)?/g, m, best = null, labelled = null;
+    while ((m = re.exec(flat))) {
+      var tok = m[0], start = m.index, end = start + tok.length;
+      if (/\./.test(tok)) continue;                                    // trip meters and averages have decimals
+      var before = flat.slice(Math.max(0, start - 16), start), after = flat.slice(end, end + 8);
+      if (/[:]\s*$/.test(before) || /^\s*:/.test(after)) continue;       // clock
+      if (/^\s*(°|DEG|%|MPH|MPG|KM\/H|L\/100|RPM|PSI|AM\b|PM\b|[FC]\b)/.test(after)) continue;
+      if (/(TRIP|RANGE|DTE|TO EMPTY|AVG|AVERAGE|OUTSIDE|TEMP|ECO)\W*\w*\W*$/.test(before)) continue;
+      if (/,/.test(tok) && !/^\d{1,3}(,\d{3})+$/.test(tok)) continue;     // commas only as thousands
+      var n = parseInt(tok.replace(/,/g, ''), 10);
+      if (!(n >= 1 && n <= 1999999)) continue;
+      var unit = /^\s*(KM|KILOMET)/.test(after) ? 'km' : (/^\s*(MI|MILES)\b/.test(after) ? 'mi' : '');
+      var c = { n: n, unit: unit };
+      if (/(ODO|ODOMETER|TOTAL)\W*$/.test(before) && (!labelled || n > labelled.n)) labelled = c;
+      if (!best || n > best.n) best = c;
+    }
+    var pick = labelled || best;
+    if (!pick) return {};
+    var unit = pick.unit || (/\bKM\b/.test(flat) && !/\bMI(LES)?\b/.test(flat) ? 'km' : 'mi');
+    if (unit === 'km') {
+      return { mileage: String(Math.round(pick.n * 0.621371)),
+        _hint: 'From odometer photo: ' + pick.n.toLocaleString('en-US') + ' km converted to miles' };
+    }
+    return { mileage: String(pick.n) };
   }
 
   /* ---------- door sticker reading (from the OCR text) ---------- */
@@ -715,11 +745,21 @@
     }
   }
 
-  /* ---------- tire label photo ---------- */
-  var tire = { file: null, previewUrl: '', raw: '' };
+  /* ---------- tire label + odometer photos ---------- */
   var TIRE_HELP = 'Fills front, rear and spare tire sizes and cold pressures, seating capacity and max load. Nothing else on the form is changed.';
+  var ODO_HELP = 'Light the dash first (open the driver door or key on, engine off), then photograph the odometer. Fills Mileage only.';
+  var PHOTO = {
+    tire: { parse: parseTirePlacard, hint: 'From tire label photo', help: TIRE_HELP, button: 'Read tire label',
+      none: 'No tire sizes or pressures found. Retake the photo straight on, in good light, then tap Read tire label.',
+      done: function (keys) { return 'Filled ' + keys.length + ' tire/loading value' + (keys.length === 1 ? '' : 's') + '. Nothing else was changed.'; } },
+    odo: { parse: parseOdometer, hint: 'From odometer photo', help: ODO_HELP, button: 'Read odometer',
+      none: 'No odometer reading found. Make sure the dash is lit, get close, avoid glare, then tap Read odometer.',
+      done: function () { return 'Mileage filled: ' + Number(current.fields.mileage).toLocaleString('en-US') + '. Check it against the dash.'; } }
+  };
+  function blankPhoto() { return { file: null, previewUrl: '', raw: '' }; }
+  var photos = { tire: blankPhoto(), odo: blankPhoto() };
 
-  function tireText(file, status) {
+  function photoText(file, status) {
     var nativeScanner = nativeVinScanner();
     if (nativeScanner && nativeScanner.recognizeText) {
       // Same Android text recognition the VIN photo uses.
@@ -727,7 +767,7 @@
         return nativeScanner.recognizeText({ imageBase64: canvas.toDataURL('image/jpeg', 0.9).split(',')[1] || '' });
       }).then(function (r) { return r && r.text ? r.text : ''; });
     }
-    // Browser fallback: same Tesseract engine; allow the "/" and "," a tire label needs.
+    // Browser fallback: same Tesseract engine, without the VIN-only character list.
     return loadOcrEngine().then(function (Tesseract) { return getOcrWorker(Tesseract, status); })
       .then(function (worker) {
         return worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' })
@@ -735,31 +775,42 @@
       }).then(function (r) { return r && r.data ? r.data.text : ''; });
   }
 
-  function readTirePhoto() {
-    var status = $('#tire-status'), btn = $('#tire-ocr');
-    if (!tire.file) { if (status) status.textContent = 'Take a photo of the tire label first.'; return; }
+  function readPhoto(kind) {
+    var cfg = PHOTO[kind], p = photos[kind];
+    var status = $('#' + kind + '-status'), btn = $('#' + kind + '-ocr');
+    if (!p.file) { if (status) status.textContent = 'Take or choose a photo first.'; return; }
     if (btn) btn.disabled = true;
-    if (status) status.textContent = 'Reading tire label…';
-    tireText(tire.file, status).then(function (text) {
-      tire.raw = text;
-      var found = parseTirePlacard(text), keys = Object.keys(found);
-      if (!keys.length) {
-        if (status) status.textContent = 'No tire sizes or pressures found. Retake the photo straight on, in good light, then tap Read tire label.';
-        return;
-      }
-      keys.forEach(function (k) { setField(k, found[k], 'From tire label photo'); });
-      var where = current.fields.vin ? ' Saved with ' + current.fields.vin + '.' : ' Scan or enter the VIN and they will be saved with it.';
-      if (status) status.textContent = 'Filled ' + keys.length + ' tire/loading value' + (keys.length === 1 ? '' : 's') + '. Nothing else was changed.' + where;
+    if (status) status.textContent = 'Reading photo…';
+    photoText(p.file, status).then(function (text) {
+      p.raw = text;
+      var found = cfg.parse(text), hint = found._hint || cfg.hint;
+      delete found._hint;
+      var keys = Object.keys(found);
+      if (!keys.length) { if (status) status.textContent = cfg.none; return; }
+      keys.forEach(function (k) { setField(k, found[k], hint); });
+      var where = current.fields.vin ? ' Saved with ' + current.fields.vin + '.' : ' Scan or enter the VIN and it will be saved with it.';
+      if (status) status.textContent = cfg.done(keys) + where;
       if (current.fields.vin) saveRecord(current);
       renderForm(); renderHistory();
     }).catch(function (err) {
-      if (status) status.textContent = (err && err.message) || 'Could not read the tire label. Try another photo.';
+      if (status) status.textContent = (err && err.message) || 'Could not read the photo. Try another one.';
     }).then(function () {
       if (btn) btn.disabled = false;
-      var box = $('#tire-raw-box'), pre = $('#tire-raw');
-      if (box) box.hidden = !tire.raw;
-      if (pre) pre.textContent = tire.raw;
+      var box = $('#' + kind + '-raw-box'), pre = $('#' + kind + '-raw');
+      if (box) box.hidden = !p.raw;
+      if (pre) pre.textContent = p.raw;
     });
+  }
+
+  function resetPhoto(kind) {
+    var p = photos[kind];
+    if (p.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(p.previewUrl);
+    photos[kind] = blankPhoto();
+    ['-photo', '-gallery'].forEach(function (suffix) { var i = $('#' + kind + suffix); if (i) i.value = ''; });
+    var pv = $('#' + kind + '-preview'), rb = $('#' + kind + '-raw-box'), st = $('#' + kind + '-status');
+    if (pv) { pv.removeAttribute('src'); pv.hidden = true; }
+    if (rb) rb.hidden = true;
+    if (st) st.textContent = PHOTO[kind].help;
   }
 
   /* ---------- rendering ---------- */
@@ -822,7 +873,8 @@
     box.innerHTML = '<div class="list">' + history.map(function (h, i) {
       var f = h.fields || {};
       var name = [f.year, f.make, f.model].filter(Boolean).join(' ') || 'Not decoded yet';
-      var extra = [f.gvwr ? 'GVWR ' + f.gvwr + ' lb' : '', new Date(h.savedAt).toLocaleString()].filter(Boolean).join(' · ');
+      var extra = [f.mileage ? Number(f.mileage).toLocaleString('en-US') + ' mi' : '', f.gvwr ? 'GVWR ' + f.gvwr + ' lb' : '',
+        new Date(h.savedAt).toLocaleString()].filter(Boolean).join(' · ');
       return '<div class="hrow' + (h.vin === current.fields.vin ? ' cur' : '') + '">' +
         '<button class="item" data-load="' + i + '"><b>' + esc(name) + '</b><span class="mono">' + esc(h.vin) + '</span><span>' + esc(extra) + '</span></button>' +
         '<button class="xbtn" data-del="' + i + '" aria-label="Remove ' + esc(h.vin) + '">✕</button></div>';
@@ -849,7 +901,7 @@
     // Same three buttons, same functions as the tow app. Only the source label for the form is noted here.
     if (t.id === 'vin-barcode-start') { pendingSource = 'Barcode scan'; return startBarcodeScan(); }
     if (t.id === 'vin-ocr') { pendingSource = 'Photo (OCR)'; return scanVinPhoto(); }
-    if (t.id === 'tire-ocr') return readTirePhoto();
+    if (t.id === 'tire-ocr' || t.id === 'odo-ocr') return readPhoto(t.id.split('-')[0]);
     if (t.id === 'vin-go') {
       var vin = ($('#vin').value || '').trim().toUpperCase();
       state.vinText = vin;
@@ -868,16 +920,11 @@
       state.ocrRaw = ''; state.vinFile = null;
       if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);
       state.vinPreviewUrl = '';
-      var photo = $('#vin-photo'), preview = $('#vin-preview');
+      var photo = $('#vin-photo'), gallery = $('#vin-gallery'), preview = $('#vin-preview');
       if (photo) photo.value = '';
+      if (gallery) gallery.value = '';
       if (preview) { preview.removeAttribute('src'); preview.hidden = true; }
-      if (tire.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(tire.previewUrl);
-      tire = { file: null, previewUrl: '', raw: '' };
-      var tp = $('#tire-photo'), tpv = $('#tire-preview'), trb = $('#tire-raw-box'), ts = $('#tire-status');
-      if (tp) tp.value = '';
-      if (tpv) { tpv.removeAttribute('src'); tpv.hidden = true; }
-      if (trb) trb.hidden = true;
-      if (ts) ts.textContent = TIRE_HELP;
+      resetPhoto('tire'); resetPhoto('odo');
       setMsg(''); renderVin(); renderForm(); renderHistory(); window.scrollTo(0, 0);
       return;
     }
@@ -913,15 +960,30 @@
     }
   });
 
+  // Tire label and odometer: camera or gallery photo, read when the button is tapped.
   document.addEventListener('change', function (e) {
-    if (!e.target || e.target.id !== 'tire-photo') return;
+    var m = e.target && /^(tire|odo)-(photo|gallery)$/.exec(e.target.id || '');
+    if (!m) return;
+    var kind = m[1], p = photos[kind], file = e.target.files && e.target.files[0];
+    p.file = file || null;
+    if (p.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(p.previewUrl);
+    p.previewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+    var preview = $('#' + kind + '-preview'), status = $('#' + kind + '-status');
+    if (preview) { preview.src = p.previewUrl; preview.hidden = !p.previewUrl; }
+    if (status && file) status.textContent = 'Photo ready. Tap “' + PHOTO[kind].button + '”.';
+  });
+
+  // VIN photo from the gallery: hands the picked file to the tow app's photo reader exactly like a camera photo.
+  document.addEventListener('change', function (e) {
+    if (!e.target || e.target.id !== 'vin-gallery') return;
     var file = e.target.files && e.target.files[0];
-    tire.file = file || null;
-    if (tire.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(tire.previewUrl);
-    tire.previewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
-    var preview = $('#tire-preview'), status = $('#tire-status');
-    if (preview) { preview.src = tire.previewUrl; preview.hidden = !tire.previewUrl; }
-    if (status && file) status.textContent = 'Photo ready. Tap “Read tire label”.';
+    state.vinFile = file || null;
+    if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);
+    state.vinPreviewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+    state.ocrStatus = file ? 'Photo ready. Tap “Read VIN from photo”.' : '';
+    var preview = $('#vin-preview'), status = $('#vin-ocr-status');
+    if (preview) { preview.src = state.vinPreviewUrl; preview.hidden = !state.vinPreviewUrl; }
+    if (status) status.textContent = state.ocrStatus;
   });
 
   // Edits to the form are saved to the recent-scans list as you go.
@@ -957,7 +1019,7 @@
   // exposed for tests
   window.__vin = {
     state: state, current: function () { return current; }, history: function () { return history; },
-    renderVin: renderVin, parseDoorSticker: parseDoorSticker, parseTirePlacard: parseTirePlacard, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
+    renderVin: renderVin, parseDoorSticker: parseDoorSticker, parseTirePlacard: parseTirePlacard, parseOdometer: parseOdometer, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
     extractBarcodeVin: extractBarcodeVin, extractVinCandidates: extractVinCandidates,
     nativeScannerAvailable: function () { var n = nativeVinScanner(); return !!(n && (n.scanBarcode || n.recognizeText)); }
   };
