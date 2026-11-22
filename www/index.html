@@ -41,6 +41,16 @@
         <div class="muted">Uses the free US government (NHTSA) VIN service. Drive type, powertrain and transmission come from the VIN. Weight and clearance still come from the database or your measurements.</div>
       </div>
 
+      <div class="card stack">
+        <div class="label">TIRE PRESSURE LABEL</div>
+        <label class="f" for="tire-photo">Photograph the tire and loading label (usually on the driver door jamb)</label>
+        <input id="tire-photo" type="file" accept="image/*" capture="environment">
+        <img id="tire-preview" class="vin-preview" alt="Tire label photo preview" hidden>
+        <button class="btn block" id="tire-ocr" type="button">Read tire label</button>
+        <div id="tire-status" class="muted" aria-live="polite">Fills front, rear and spare tire sizes and cold pressures, seating capacity and max load. Nothing else on the form is changed.</div>
+        <details id="tire-raw-box" class="muted" hidden><summary>See what OCR actually read</summary><pre id="tire-raw" class="ocr-raw"></pre></details>
+      </div>
+
       <div id="msg" class="notice" hidden></div>
 
       <div class="card stack">

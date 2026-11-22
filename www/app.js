@@ -434,7 +434,8 @@
   var GROUPS = [
     { title: 'VEHICLE', fields: [
       ['vin', 'VIN', 'full'], ['year', 'Year'], ['make', 'Make'], ['model', 'Model'], ['trim', 'Trim'],
-      ['series', 'Series'], ['body', 'Body style'], ['vehicleType', 'Vehicle type'], ['doors', 'Doors']] },
+      ['series', 'Series'], ['body', 'Body style'], ['vehicleType', 'Vehicle type'], ['doors', 'Doors'],
+      ['mfgDate', 'Built (month/year)', 'full']] },
     { title: 'WEIGHT & SIZE', fields: [
       ['gvwr', 'GVWR (lb)', 'num'], ['curb', 'Curb weight (lb)', 'num'], ['gawrFront', 'GAWR front (lb)', 'num'],
       ['gawrRear', 'GAWR rear (lb)', 'num'], ['gvwrClass', 'GVWR class (NHTSA)', 'full'], ['wheelbase', 'Wheelbase (in)', 'num'],
@@ -442,8 +443,11 @@
     { title: 'POWERTRAIN', fields: [
       ['engine', 'Engine', 'full'], ['fuel', 'Fuel'], ['power', 'Powertrain'], ['drive', 'Drive type', 'full'],
       ['trans', 'Transmission', 'full'], ['brakes', 'Brake system', 'full']] },
-    { title: 'DOOR STICKER', fields: [
-      ['mfgDate', 'Built (month/year)'], ['tireSize', 'Tire size'], ['tirePsi', 'Cold tire pressure', 'full']] },
+    { title: 'TIRES & LOADING', fields: [
+      ['tireSizeFront', 'Front tire size'], ['psiFront', 'Front cold psi', 'num'],
+      ['tireSizeRear', 'Rear tire size'], ['psiRear', 'Rear cold psi', 'num'],
+      ['tireSizeSpare', 'Spare tire size'], ['psiSpare', 'Spare cold psi', 'num'],
+      ['seating', 'Seating capacity', 'num'], ['maxLoad', 'Max occupants + cargo (lb)', 'num']] },
     { title: 'ORIGIN', fields: [['manufacturer', 'Manufacturer', 'full'], ['plant', 'Assembly plant', 'full']] },
     { title: 'SCAN', fields: [
       ['source', 'Scanned from'], ['scannedAt', 'Scanned', 'full'], ['checkDigit', 'Check digit', 'full'], ['notes', 'Notes', 'area']] }
@@ -463,8 +467,17 @@
 
   /* ---------- recent scans (last 6, stored on this phone) ---------- */
   function loadHistory() {
-    try { var a = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); return Array.isArray(a) ? a.slice(0, HISTORY_MAX) : []; }
-    catch (e) { return []; }
+    try {
+      var a = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+      if (!Array.isArray(a)) return [];
+      a.forEach(function (h) {   // scans saved before front/rear tire fields existed
+        var f = h.fields || {}, hi = h.hints || {};
+        if (f.tireSize && !f.tireSizeFront) { f.tireSizeFront = f.tireSize; hi.tireSizeFront = hi.tireSize; }
+        if (f.tirePsi && !f.psiFront) { f.psiFront = String(parseInt(f.tirePsi, 10) || ''); hi.psiFront = hi.tirePsi; }
+        delete f.tireSize; delete f.tirePsi; delete hi.tireSize; delete hi.tirePsi;
+      });
+      return a.slice(0, HISTORY_MAX);
+    } catch (e) { return []; }
   }
   function storeHistory() {
     try { localStorage.setItem(HISTORY_KEY, JSON.stringify(history)); } catch (e) { /* storage blocked: ignore */ }
@@ -480,6 +493,65 @@
     history.unshift({ vin: vin, savedAt: Date.now(), fields: clone(rec.fields), hints: clone(rec.hints) });
     history = history.slice(0, HISTORY_MAX);
     storeHistory();
+  }
+
+  /* ---------- tire helpers ---------- */
+  var TIRE_SIZE = /\b(P|LT|ST|T)?\s?(\d{3})\s?\/\s?(\d{2})\s?(ZR|R|D|B)\s?(\d{2})\b/;
+  function tireSize(m) { return (m[1] || '') + m[2] + '/' + m[3] + m[4] + m[5]; }
+  function allTireSizes(text) {
+    var out = [], re = new RegExp(TIRE_SIZE.source, 'g'), m;
+    while ((m = re.exec(text))) out.push(tireSize(m));
+    return out;
+  }
+  function isSpareSize(size) { return /^T|\d{2}D\d{2}$/.test(size); }   // T-type temporary spares, bias-ply D
+  function psiValues(text) {
+    var out = [], re = /(\d{2,3})\s*PSI\b/g, m, v;
+    while ((m = re.exec(text))) { v = parseInt(m[1], 10); if (v >= 15 && v <= 120) out.push(v); }
+    if (!out.length) {   // kPa-only labels
+      re = /(\d{3})\s*KPA\b/g;
+      while ((m = re.exec(text))) { v = Math.round(parseInt(m[1], 10) / 6.895); if (v >= 15 && v <= 120) out.push(v); }
+    }
+    return out;
+  }
+  // Fill front/rear/spare tire sizes and pressures that are still missing, in label order.
+  function fillTiresInOrder(out, text) {
+    var sizes = allTireSizes(text), road = sizes.filter(function (z) { return !isSpareSize(z); });
+    var spare = sizes.filter(isSpareSize)[0];
+    if (!out.tireSizeFront && road[0]) out.tireSizeFront = road[0];
+    if (!out.tireSizeRear && road.length) out.tireSizeRear = road[1] || road[0];
+    if (!out.tireSizeSpare && spare) out.tireSizeSpare = spare;
+    var psi = psiValues(text);
+    if (!out.psiFront && psi[0]) out.psiFront = psi[0];
+    if (!out.psiRear && psi.length) out.psiRear = psi[1] || psi[0];
+    if (!out.psiSpare && psi[2] && (out.tireSizeSpare || spare)) out.psiSpare = psi[2];
+  }
+
+  /* ---------- tire & loading label (the separate tire pressure placard) ---------- */
+  function parseTirePlacard(raw) {
+    var text = String(raw || '').replace(/\\n/g, '\n').toUpperCase();
+    var lines = text.split(/\r?\n/), out = {};
+    var POS = [['Front', /\b(FRONT|FRT|AVANT)\b/], ['Rear', /\b(REAR|ARRI[EÈ]RE)\b/], ['Spare', /\b(SPARE|SECOURS)\b/]];
+    // Rows like "FRONT  P225/45R19  250 kPa, 36 PSI"
+    lines.forEach(function (line) {
+      POS.forEach(function (p) {
+        if (!p[1].test(line)) return;
+        var m = TIRE_SIZE.exec(line), psi = psiValues(line);
+        if (m && !out['tireSize' + p[0]]) out['tireSize' + p[0]] = tireSize(m);
+        if (psi.length && !out['psi' + p[0]]) out['psi' + p[0]] = psi[0];
+      });
+    });
+    // OCR often reads the table column by column instead; fall back to front, rear, spare order.
+    var flat = lines.join(' ').replace(/\s+/g, ' ');
+    fillTiresInOrder(out, flat);
+    var seat = /SEATING CAPACITY\D{0,40}?TOTAL\s*(\d{1,2})\b/.exec(flat) || /SEATING CAPACITY\D{0,30}?(\d{1,2})\b/.exec(flat);
+    if (seat) out.seating = parseInt(seat[1], 10);
+    var load = /(COMBINED WEIGHT|NEVER EXCEED|NE DOIT JAMAIS)[\s\S]{0,140}?(\d[\d,]{2,5})\s*(LBS|LB)\b/.exec(flat);
+    if (load) {
+      var n = parseInt(load[2].replace(/,/g, ''), 10);
+      if (n >= 300 && n <= 6000) out.maxLoad = n;
+    }
+    Object.keys(out).forEach(function (k) { out[k] = String(out[k]); });
+    return out;
   }
 
   /* ---------- door sticker reading (from the OCR text) ---------- */
@@ -510,18 +582,32 @@
     if (rear) out.gawrRear = rear;
     var date = /\b(MFD|MFG|DATE|MANUFACTURED)\b\D{0,25}?\b(0?[1-9]|1[0-2])\s*[\/\-.]?\s*(20\d{2}|\d{2})\b/.exec(flat);
     if (date) out.mfgDate = ('0' + date[2]).slice(-2) + '/' + (date[3].length === 2 ? '20' + date[3] : date[3]);
-    var tire = /\b(P|LT)?\s?(\d{3})\s?\/?\s?(\d{2})\s?Z?R\s?(\d{2})\b/.exec(flat);
-    if (tire) out.tireSize = (tire[1] || '') + tire[2] + '/' + tire[3] + 'R' + tire[4];
-    var psi = [], re = /(\d{2,3})\s*PSI\b/g, p;
-    while ((p = re.exec(flat))) { var v = parseInt(p[1], 10); if (v >= 20 && v <= 120 && psi.indexOf(v) === -1) psi.push(v); }
-    if (psi.length) out.tirePsi = psi.join(' / ') + ' psi';
+    // Door stickers list tires on the axle lines: "GAWR FRT ... WITH P225/45R19 TIRES ... AT 250 KPA COLD"
+    function axle(re) {
+      var m = re.exec(flat);
+      if (!m) return '';
+      var rest = flat.slice(m.index + m[0].length), stop = rest.search(/\bGAWR\b|\bGVWR\b/);
+      return stop > 0 ? rest.slice(0, stop) : rest.slice(0, 120);
+    }
+    [['Front', axle(/\bGAWR\s*(FRT|FR|FRONT|F)\b/)], ['Rear', axle(/\bGAWR\s*(RR|REAR|R)\b/)]].forEach(function (a) {
+      if (!a[1]) return;
+      var m = TIRE_SIZE.exec(a[1]), psi = psiValues(a[1]);
+      if (m) out['tireSize' + a[0]] = tireSize(m);
+      if (psi.length) out['psi' + a[0]] = psi[0];
+    });
+    fillTiresInOrder(out, flat);
+    Object.keys(out).forEach(function (k) { out[k] = String(out[k]); });
     return out;
   }
 
   /* ---------- turning a scanned VIN into a filled form ---------- */
   function startRecord(vin, source) {
     var prior = findHistory(vin);
+    var unsaved = current.fields.vin ? null : current;   // e.g. a tire label read before the VIN was scanned
     current = prior ? { fields: clone(prior.fields), hints: clone(prior.hints || {}) } : blankRecord();
+    if (unsaved) Object.keys(unsaved.fields).forEach(function (k) {
+      if (unsaved.fields[k]) { current.fields[k] = unsaved.fields[k]; if (unsaved.hints[k]) current.hints[k] = unsaved.hints[k]; }
+    });
     current.fields.vin = vin;
     current.fields.source = source;
     current.fields.scannedAt = new Date().toLocaleString();
@@ -629,6 +715,53 @@
     }
   }
 
+  /* ---------- tire label photo ---------- */
+  var tire = { file: null, previewUrl: '', raw: '' };
+  var TIRE_HELP = 'Fills front, rear and spare tire sizes and cold pressures, seating capacity and max load. Nothing else on the form is changed.';
+
+  function tireText(file, status) {
+    var nativeScanner = nativeVinScanner();
+    if (nativeScanner && nativeScanner.recognizeText) {
+      // Same Android text recognition the VIN photo uses.
+      return prepareVinImage(file).then(function (canvas) {
+        return nativeScanner.recognizeText({ imageBase64: canvas.toDataURL('image/jpeg', 0.9).split(',')[1] || '' });
+      }).then(function (r) { return r && r.text ? r.text : ''; });
+    }
+    // Browser fallback: same Tesseract engine; allow the "/" and "," a tire label needs.
+    return loadOcrEngine().then(function (Tesseract) { return getOcrWorker(Tesseract, status); })
+      .then(function (worker) {
+        return worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' })
+          .then(function () { return worker.recognize(file); });
+      }).then(function (r) { return r && r.data ? r.data.text : ''; });
+  }
+
+  function readTirePhoto() {
+    var status = $('#tire-status'), btn = $('#tire-ocr');
+    if (!tire.file) { if (status) status.textContent = 'Take a photo of the tire label first.'; return; }
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = 'Reading tire label…';
+    tireText(tire.file, status).then(function (text) {
+      tire.raw = text;
+      var found = parseTirePlacard(text), keys = Object.keys(found);
+      if (!keys.length) {
+        if (status) status.textContent = 'No tire sizes or pressures found. Retake the photo straight on, in good light, then tap Read tire label.';
+        return;
+      }
+      keys.forEach(function (k) { setField(k, found[k], 'From tire label photo'); });
+      var where = current.fields.vin ? ' Saved with ' + current.fields.vin + '.' : ' Scan or enter the VIN and they will be saved with it.';
+      if (status) status.textContent = 'Filled ' + keys.length + ' tire/loading value' + (keys.length === 1 ? '' : 's') + '. Nothing else was changed.' + where;
+      if (current.fields.vin) saveRecord(current);
+      renderForm(); renderHistory();
+    }).catch(function (err) {
+      if (status) status.textContent = (err && err.message) || 'Could not read the tire label. Try another photo.';
+    }).then(function () {
+      if (btn) btn.disabled = false;
+      var box = $('#tire-raw-box'), pre = $('#tire-raw');
+      if (box) box.hidden = !tire.raw;
+      if (pre) pre.textContent = tire.raw;
+    });
+  }
+
   /* ---------- rendering ---------- */
   function setMsg(text, isErr) {
     var m = $('#msg');
@@ -716,6 +849,7 @@
     // Same three buttons, same functions as the tow app. Only the source label for the form is noted here.
     if (t.id === 'vin-barcode-start') { pendingSource = 'Barcode scan'; return startBarcodeScan(); }
     if (t.id === 'vin-ocr') { pendingSource = 'Photo (OCR)'; return scanVinPhoto(); }
+    if (t.id === 'tire-ocr') return readTirePhoto();
     if (t.id === 'vin-go') {
       var vin = ($('#vin').value || '').trim().toUpperCase();
       state.vinText = vin;
@@ -737,6 +871,13 @@
       var photo = $('#vin-photo'), preview = $('#vin-preview');
       if (photo) photo.value = '';
       if (preview) { preview.removeAttribute('src'); preview.hidden = true; }
+      if (tire.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(tire.previewUrl);
+      tire = { file: null, previewUrl: '', raw: '' };
+      var tp = $('#tire-photo'), tpv = $('#tire-preview'), trb = $('#tire-raw-box'), ts = $('#tire-status');
+      if (tp) tp.value = '';
+      if (tpv) { tpv.removeAttribute('src'); tpv.hidden = true; }
+      if (trb) trb.hidden = true;
+      if (ts) ts.textContent = TIRE_HELP;
       setMsg(''); renderVin(); renderForm(); renderHistory(); window.scrollTo(0, 0);
       return;
     }
@@ -772,6 +913,17 @@
     }
   });
 
+  document.addEventListener('change', function (e) {
+    if (!e.target || e.target.id !== 'tire-photo') return;
+    var file = e.target.files && e.target.files[0];
+    tire.file = file || null;
+    if (tire.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(tire.previewUrl);
+    tire.previewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+    var preview = $('#tire-preview'), status = $('#tire-status');
+    if (preview) { preview.src = tire.previewUrl; preview.hidden = !tire.previewUrl; }
+    if (status && file) status.textContent = 'Photo ready. Tap “Read tire label”.';
+  });
+
   // Edits to the form are saved to the recent-scans list as you go.
   document.addEventListener('change', function (e) {
     var el = e.target;
@@ -805,7 +957,7 @@
   // exposed for tests
   window.__vin = {
     state: state, current: function () { return current; }, history: function () { return history; },
-    renderVin: renderVin, parseDoorSticker: parseDoorSticker, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
+    renderVin: renderVin, parseDoorSticker: parseDoorSticker, parseTirePlacard: parseTirePlacard, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
     extractBarcodeVin: extractBarcodeVin, extractVinCandidates: extractVinCandidates,
     nativeScannerAvailable: function () { var n = nativeVinScanner(); return !!(n && (n.scanBarcode || n.recognizeText)); }
   };

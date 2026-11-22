@@ -103,11 +103,12 @@ test('door sticker text gives GVWR, axle ratings, build date, tires and pressure
   const native = w.__vin.parseDoorSticker(
     'MFD BY MAZDA MOTOR CORPORATION DATE: 06/13\nGVWR/PNBV 2155 KG (4751 LB)\nGAWR FRT/PNBE AV 1170 KG (2579 LB) WITH P225/45R19 TIRES\n' +
     'GAWR RR/PNBE AR 1035 KG (2282 LB)\nVIN JM1GJ1W51E1100001\nCOLD TIRE PRESSURE 250 KPA, 36 PSI');
-  assert.deepEqual(JSON.parse(JSON.stringify(native)), { gvwr: 4751, gawrFront: 2579, gawrRear: 2282, mfgDate: '06/2013', tireSize: 'P225/45R19', tirePsi: '36 psi' });
+  assert.deepEqual(JSON.parse(JSON.stringify(native)), { gvwr: '4751', gawrFront: '2579', gawrRear: '2282', mfgDate: '06/2013',
+    tireSizeFront: 'P225/45R19', tireSizeRear: 'P225/45R19', psiFront: '36', psiRear: '36' });
   // Browser OCR whitelist strips punctuation; still read it, and convert kg when no lb is present.
   const browser = w.__vin.parseDoorSticker('Enhanced photo pass:\\nDATE 0613 GVWR PNBV 2155 KG\\nGAWR FRT 1170KG 2579LB');
-  assert.equal(browser.gvwr, 4751);
-  assert.equal(browser.gawrFront, 2579);
+  assert.equal(browser.gvwr, '4751');
+  assert.equal(browser.gawrFront, '2579');
   assert.equal(browser.mfgDate, '06/2013');
 });
 
@@ -280,4 +281,81 @@ test('a slow lookup for an old VIN does not overwrite the vehicle now on screen'
   const old = w.__vin.history().find(h => h.vin === VIN2);
   assert.equal(old.fields.make, 'Ford', 'old VIN still decoded in the background');
   assert.ok(d.querySelector('.hrow.cur').textContent.includes(VIN), 'highlight stays on the VIN on screen');
+});
+
+test('tire label: row layout, column layout and bilingual labels', () => {
+  const { window: w } = boot();
+  const p = w.__vin.parseTirePlacard;
+  const rows = p('TIRE AND LOADING INFORMATION\nSEATING CAPACITY TOTAL 5 FRONT 2 REAR 3\n' +
+    'The combined weight of occupants and cargo should never exceed 385 kg or 849 lbs.\n' +
+    'TIRE SIZE COLD TIRE PRESSURE\nFRONT P245/60R18 240 kPa, 35 PSI\nREAR P245/60R18 240 kPa, 35 PSI\nSPARE T155/90D17 420 kPa, 60 PSI');
+  assert.deepEqual(JSON.parse(JSON.stringify(rows)), { tireSizeFront: 'P245/60R18', psiFront: '35', tireSizeRear: 'P245/60R18', psiRear: '35',
+    tireSizeSpare: 'T155/90D17', psiSpare: '60', seating: '5', maxLoad: '849' });
+  // ML Kit often returns the table one column at a time, and staggered sizes front/rear.
+  const cols = p('SEATING CAPACITY TOTAL 4\nFRONT\nREAR\nSPARE\n245/40ZR19\n275/35ZR19\nT135/80R18\n250 KPA, 36 PSI\n260 KPA, 38 PSI\n420 KPA, 60 PSI');
+  assert.equal(cols.tireSizeFront, '245/40ZR19');
+  assert.equal(cols.tireSizeRear, '275/35ZR19');
+  assert.equal(cols.tireSizeSpare, 'T135/80R18');
+  assert.deepEqual([cols.psiFront, cols.psiRear, cols.psiSpare], ['36', '38', '60']);
+  assert.equal(cols.seating, '4');
+  const fr = p('AVANT FRONT P225/65R17 230 KPA 33 PSI\nARRIÈRE REAR P225/65R17 230 KPA 33 PSI\nDE SECOURS SPARE T155/90D17 420 KPA 60 PSI');
+  assert.equal(fr.psiFront, '33'); assert.equal(fr.tireSizeSpare, 'T155/90D17'); assert.equal(fr.psiSpare, '60');
+  // kPa-only label
+  assert.equal(p('FRONT 215/55R17 240 KPA').psiFront, '35');
+  assert.deepEqual(JSON.parse(JSON.stringify(p('nothing useful here'))), {});
+});
+
+test('tire label photo fills only tire fields, keeps the door sticker values, works before the VIN', async () => {
+  let ocrText = 'FRONT P245/60R18 35 PSI\nREAR P245/60R18 35 PSI\nSPARE T155/90D17 60 PSI\nSEATING CAPACITY TOTAL 5';
+  const native = { scanLiveBarcode: () => Promise.resolve({ cancelled: false, vin: VIN2, rawValue: VIN2 }), recognizeText: () => Promise.resolve({ text: ocrText }) };
+  const { window: w } = boot({ native });
+  const d = w.document;
+  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
+  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
+  const RealImage = w.Image;
+  w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 100 }); Object.defineProperty(img, 'naturalHeight', { value: 50 }); setTimeout(() => img.onload(), 0); return img; };
+  w.URL.createObjectURL = () => 'blob:t'; w.URL.revokeObjectURL = () => {};
+  const tirePhoto = async () => {
+    const input = d.querySelector('#tire-photo');
+    Object.defineProperty(input, 'files', { value: [new w.File(['x'], 't.jpg', { type: 'image/jpeg' })], configurable: true });
+    input.dispatchEvent(new w.Event('change', { bubbles: true }));
+    assert.match(d.querySelector('#tire-status').textContent, /Tap “Read tire label”/, 'waits for the button');
+    click(w, d.querySelector('#tire-ocr'));
+    await tick(); await tick();
+  };
+
+  // Tire label first, before any VIN.
+  await tirePhoto();
+  assert.equal(val(d, 'psiFront'), '35');
+  assert.equal(val(d, 'tireSizeSpare'), 'T155/90D17');
+  assert.match(d.querySelector('#tire-status').textContent, /Scan or enter the VIN/);
+  assert.equal(w.__vin.history().length, 0);
+
+  // Then the barcode: tire values are kept and saved with the VIN, decode fills the rest.
+  click(w, d.querySelector('#vin-barcode-start'));
+  await tick();
+  assert.equal(val(d, 'vin'), VIN2);
+  assert.equal(val(d, 'make'), 'Ford');
+  assert.equal(val(d, 'psiFront'), '35');
+  assert.equal(w.__vin.history()[0].fields.psiSpare, '60');
+
+  // Door sticker values and notes are left alone by a second tire photo; tire fields update.
+  const notes = d.querySelector('#f-notes'); notes.value = 'keep me'; notes.dispatchEvent(new w.Event('change', { bubbles: true }));
+  w.__vin.state.ocrRaw = 'GVWR 6100 LB ' + VIN2; w.__vin.renderVin();
+  ocrText = 'FRONT P265/70R17 38 PSI\nREAR P265/70R17 41 PSI';
+  await tirePhoto();
+  assert.equal(val(d, 'gvwr'), '6100');
+  assert.equal(val(d, 'notes'), 'keep me');
+  assert.equal(val(d, 'make'), 'Ford');
+  assert.equal(val(d, 'psiRear'), '41');
+  assert.equal(val(d, 'tireSizeFront'), 'P265/70R17');
+  assert.match(d.querySelector('#f-psiRear').parentNode.textContent, /tire label photo/);
+  assert.match(d.querySelector('#tire-status').textContent, /Nothing else was changed\. Saved with/);
+});
+
+test('old saved scans with a single tire size/pressure still load', () => {
+  const { window: w } = boot({ history: [{ vin: VIN, savedAt: 1, fields: { vin: VIN, tireSize: 'P225/45R19', tirePsi: '36 psi' }, hints: {} }] });
+  click(w, w.document.querySelector('[data-load="0"]'));
+  assert.equal(val(w.document, 'tireSizeFront'), 'P225/45R19');
+  assert.equal(val(w.document, 'psiFront'), '36');
 });
