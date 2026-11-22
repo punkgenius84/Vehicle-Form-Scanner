@@ -1,7 +1,11 @@
 /* VIN Scanner UI. Vanilla JS, no build step.
  *
- * The scanning code in the block marked "COPIED UNCHANGED" below is taken line-for-line from the
- * tow app (github.com/punkgenius84/Tow-App, main @ ba33f3a, www/app.js lines 228-236, 284-781, 917-928).
+ * The scanning code in the block marked "COPIED UNCHANGED" below comes line-for-line from the tow app:
+ *  - photo/OCR and VIN helpers: the Tow-App build that is proven on the phone (www/app.js lines 228-236, 284-388,
+ *    487-645, 781-792), left exactly as they were because photo VIN reading works;
+ *  - startBarcodeScan: current Tow-App main @ ba33f3a (www/app.js lines 501-607), which opens the native CameraX
+ *    scanner (scanLiveBarcode). One line differs, marked "VIN SCANNER CHANGE": the VIN the native scanner has
+ *    already validated (result.vin) is used first.
  * Do not edit that block here; fix it in the tow app and copy it again.
  * Everything outside that block is new: it takes the VIN the scanner puts in state.vinText, decodes it
  * with NHTSA, reads extra data from a door-sticker photo, fills the form and keeps the last 6 scans.
@@ -39,9 +43,9 @@
   function normalizeVinCandidate(raw) {
     var value = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (value.length !== 17) return '';
-    // VINs cannot contain I, O or Q. OCR most often confuses O/Q with zero
-    // and I with one; apply those substitutions only to OCR text, never barcodes.
-    value = value.replace(/[OQ]/g, '0').replace(/I/g, '1');
+    // OCR commonly confuses these characters. Apply only unambiguous VIN rules;
+    // never guess between other letters and digits.
+    value = value.replace(/O/g, '0').replace(/[IQ]/g, '1');
     return /^[A-HJ-NPR-Z0-9]{17}$/.test(value) ? value : '';
   }
 
@@ -55,139 +59,27 @@
     return vin[8] === (check === 10 ? 'X' : String(check));
   }
 
-  function vinCandidateScore(vin, labelled) {
-    var score = 0;
-    // An explicit VIN label outweighs an incidental 17-character number elsewhere on the sticker.
-    // Check-digit evidence ranks candidates only within the same evidence class.
-    if (labelled) score += 10000;
-    if (vinCheckDigitValid(vin)) score += 1000;
-    // Position 9 is the North American check digit; position 10 is a model-year code.
-    if (/^[0-9X]$/.test(vin.charAt(8))) score += 45;
-    if (/^[ABCDEFGHJKLMNPRSTVWXY123456789]$/.test(vin.charAt(9))) score += 35;
-    if (/^[A-HJ-NPR-Z0-9]{3}$/.test(vin.slice(0, 3)) && /[A-Z]/.test(vin.slice(0, 3))) score += 20;
-    if (/\d/.test(vin.slice(11))) score += 10;
-    return score;
-  }
-
   function extractVinCandidates(text) {
-    var found = [], metadata = {}, lines = String(text || '').toUpperCase().split(/\r?\n/);
-    function addCandidate(raw, labelled) {
+    var found = [], lines = String(text || '').toUpperCase().split(/\r?\n/);
+    function addCandidate(raw) {
       var candidate = normalizeVinCandidate(raw);
-      if (!candidate) return;
-      if (!metadata[candidate]) metadata[candidate] = { labelled: !!labelled };
-      else if (labelled) metadata[candidate].labelled = true;
-      if (found.indexOf(candidate) === -1) found.push(candidate);
+      if (candidate && found.indexOf(candidate) === -1) found.push(candidate);
     }
-    function addLabelledWindows(raw) {
-      var compact = String(raw || '').replace(/[^A-Z0-9]/g, '');
-      for (var i = 0; i <= compact.length - 17; i++) addCandidate(compact.slice(i, i + 17), true);
-    }
-    lines.forEach(function (line, lineIndex) {
-      // Capture exactly 17 OCR characters after a VIN label, allowing spaces
-      // or hyphens between characters. Do not consume the rest of the sticker.
-      var vinLabel = /\b(?:VIN(?:\s+(?:NO\.?|NUMBER))?|V1N|VEHICLE\s+IDENTIFICATION(?:\s+NUMBER|\s+NO\.?)?)(?=\s|[:#-]|$)/;
-      var labelled = line.match(/\b(?:VIN(?:\s+(?:NO\.?|NUMBER))?|V1N|VEHICLE\s+IDENTIFICATION(?:\s+NUMBER|\s+NO\.?)?)\s*[:#-]?\s*((?:[A-Z0-9][\s-]?){17})/);
-      if (labelled) addLabelledWindows(labelled[1]);
-      else if (vinLabel.test(line)) {
-        // Some OCR engines put the VIN label on one line and the number on
-        // the next. Join at most the next two lines, and only accept exactly
-        // 17 characters so weight/tire/manufacturing fields cannot bleed in.
-        var nextLines = [lines[lineIndex + 1] || '', lines[lineIndex + 2] || ''];
-        for (var count = 1; count <= 2; count++) {
-          var followingText = nextLines.slice(0, count).join(' ');
-          if (/\b(?:GVWR|GAWR|MFD|MFG|TIRE|PRESSURE|FRONT|REAR|PLANT|ASSEMBLED|KPA|PSI)\b/.test(followingText)) continue;
-          var following = followingText.replace(/[^A-Z0-9]/g, '');
-          if (following.length === 17) addCandidate(following, true);
+    lines.forEach(function (line) {
+      var labelled = line.match(/\bVIN\b\s*[:#-]?\s*([A-Z0-9][A-Z0-9\s-]{15,24})/);
+      if (labelled) {
+        var labelledCompact = labelled[1].replace(/[^A-Z0-9]/g, '');
+        if (labelledCompact.length >= 17) {
+          addCandidate(labelledCompact.slice(0, 17));
+          return; // Do not create false candidates from the "VIN" label itself.
         }
       }
-
-      // Without a VIN label, accept only a standalone 17-character token
-      // (or the known 18-character leading-I label prefix). Never slide a
-      // 17-character window across an entire door-sticker line: that creates
-      // convincing-looking VINs out of GVWR, tire and manufacturing fields.
-      line.split(/[^A-Z0-9]+/).filter(Boolean).forEach(function (token) {
-        if (token.length === 17) addCandidate(token, false);
-        else if (token.length === 18 && token.charAt(0) === 'I') addCandidate(token.slice(1), false);
-      });
+      var compact = line.replace(/[^A-Z0-9]/g, '');
+      for (var i = 0; i <= compact.length - 17; i++) addCandidate(compact.slice(i, i + 17));
     });
-    return found.sort(function (a, b) {
-      return vinCandidateScore(b, metadata[b].labelled) - vinCandidateScore(a, metadata[a].labelled);
-    });
-  }
-
-  // ML Kit's flat text order can miss VINs printed to the right of their label.
-  // Pair nearby OCR lines by their image coordinates before ranking VIN candidates.
-  function extractStructuredVinCandidates(reading) {
-    var lines = reading && Array.isArray(reading.lines) ? reading.lines.slice() : [];
-    lines = lines.filter(function (line) {
-      return line && typeof line.text === 'string' &&
-        isFinite(Number(line.left)) && isFinite(Number(line.top)) &&
-        isFinite(Number(line.right)) && isFinite(Number(line.bottom));
-    }).sort(function (a, b) {
-      return Number(a.top) - Number(b.top) || Number(a.left) - Number(b.left);
-    });
-    var found = [];
-    var labelPattern = /\b(?:VIN(?:\s+(?:NO\.?|NUMBER))?|V1N|VEHICLE\s+IDENTIFICATION(?:\s+NUMBER|\s+NO\.?)?)\b/i;
-    lines.forEach(function (label, index) {
-      if (!labelPattern.test(label.text)) return;
-      var h = Math.max(1, Number(label.height) || Number(label.bottom) - Number(label.top));
-      var pairs = [];
-      lines.forEach(function (value, valueIndex) {
-        if (valueIndex === index) return;
-        var vh = Math.max(1, Number(value.height) || Number(value.bottom) - Number(value.top));
-        var overlap = Math.max(0, Math.min(Number(label.bottom), Number(value.bottom)) -
-          Math.max(Number(label.top), Number(value.top)));
-        var overlapRatio = overlap / Math.max(1, Math.min(h, vh));
-        var rightGap = Number(value.left) - Number(label.right);
-        var sameRow = overlapRatio >= 0.30 && rightGap >= -h * 0.25 && rightGap <= h * 5;
-        var belowGap = Number(value.top) - Number(label.bottom);
-        var below = belowGap >= -h * 0.25 && belowGap <= h * 3.5 &&
-          Math.abs(Number(value.left) - Number(label.left)) <= h * 4;
-        if (sameRow || below) pairs.push({
-          line: value, index: valueIndex,
-          distance: sameRow ? Math.max(0, rightGap) : h * 5 + Math.max(0, belowGap)
-        });
-      });
-      pairs.sort(function (x, y) { return x.distance - y.distance; });
-      pairs.slice(0, 3).forEach(function (pair) {
-        var pairedText = 'VIN: ' + pair.line.text;
-        var next = lines[pair.index + 1];
-        if (next) {
-          var gap = Number(next.top) - Number(pair.line.bottom);
-          var ph = Math.max(1, Number(pair.line.height) || Number(pair.line.bottom) - Number(pair.line.top));
-          if (gap >= -ph * 0.2 && gap <= ph * 1.8 &&
-              Math.abs(Number(next.left) - Number(pair.line.left)) <= ph * 3) {
-            pairedText += '\n' + next.text;
-          }
-        }
-        extractVinCandidates(pairedText).forEach(function (vin) {
-          if (found.indexOf(vin) === -1) found.push(vin);
-        });
-      });
-    });
-    return found;
-  }
-
-  function extractVinCandidatesFromOcrResults(readings) {
-    var found = [], labelled = {};
-    function add(vin, hasLabel) {
-      if (found.indexOf(vin) === -1) found.push(vin);
-      if (hasLabel) labelled[vin] = true;
-    }
-    (readings || []).forEach(function (reading) {
-      var rawText = String(reading && reading.text || '');
-      extractVinCandidates(rawText).forEach(function (vin) {
-        var appearsBesideLabel = rawText.toUpperCase().split(/\r?\n/).some(function (line) {
-          return /\b(?:VIN(?:\s+(?:NO\.?|NUMBER))?|V1N|VEHICLE\s+IDENTIFICATION(?:\s+NUMBER|\s+NO\.?)?)\b/.test(line) &&
-            extractVinCandidates(line).indexOf(vin) !== -1;
-        });
-        add(vin, appearsBesideLabel);
-      });
-      extractStructuredVinCandidates(reading).forEach(function (vin) { add(vin, true); });
-    });
-    return found.sort(function (x, y) {
-      return vinCandidateScore(y, !!labelled[y]) - vinCandidateScore(x, !!labelled[x]);
-    });
+    // Put candidates passing the North American check digit first, without
+    // discarding valid international VINs that do not use that checksum.
+    return found.sort(function (a, b) { return Number(vinCheckDigitValid(b)) - Number(vinCheckDigitValid(a)); });
   }
 
   // Barcode payloads are machine-exact, so no OCR-style character swaps here. A VIN never contains I, O or Q.
@@ -217,7 +109,7 @@
     if (state.barcodeLoader) return state.barcodeLoader;
     state.barcodeLoader = new Promise(function (resolve, reject) {
       var script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.1/umd/zxing-browser.min.js';
+      script.src = 'https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js';
       script.async = true;
       script.onload = function () {
         if (window.ZXingBrowser && window.ZXingBrowser.BrowserMultiFormatReader) resolve(window.ZXingBrowser);
@@ -274,7 +166,8 @@
             ? 'Camera permission was denied. Allow camera access in Android settings, then try again.'
             : 'Barcode scan cancelled. You can try again or use photo OCR.';
         } else {
-          var payload = result && (result.rawValue || result.vin || result.displayValue) || '';
+          // VIN SCANNER CHANGE: use the VIN the native scanner already validated (seen twice), then the raw payload.
+          var payload = result && (result.vin || result.rawValue || result.displayValue) || '';
           var vin = extractBarcodeVin(payload);
           if (vin) {
             state.vinText = vin;
@@ -381,30 +274,28 @@
     return state.ocrLoader;
   }
 
-  function prepareVinImage(file, preserveOriginal) {
+  function prepareVinImage(file) {
     return new Promise(function (resolve, reject) {
       var url = window.URL.createObjectURL(file);
       var img = new Image();
       img.onload = function () {
         try {
-          var scale = Math.min(2, 3200 / Math.max(img.naturalWidth, img.naturalHeight));
+          var scale = Math.min(3, 2000 / Math.max(img.naturalWidth, img.naturalHeight));
           var canvas = document.createElement('canvas');
           canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
           canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
           var ctx = canvas.getContext('2d', { willReadFrequently: true });
           if (!ctx) throw new Error('Could not prepare the photo for text recognition.');
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          if (!preserveOriginal) {
-            var pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            var data = pixels.data;
-            for (var i = 0; i < data.length; i += 4) {
-              var gray = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
-              // Lift midtones and increase contrast so stamped/printed VIN characters stand out.
-              var enhanced = Math.max(0, Math.min(255, (gray - 128) * 1.55 + 128));
-              data[i] = data[i + 1] = data[i + 2] = enhanced;
-            }
-            ctx.putImageData(pixels, 0, 0);
+          var pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          var data = pixels.data;
+          for (var i = 0; i < data.length; i += 4) {
+            var gray = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+            // Lift midtones and increase contrast so stamped/printed VIN characters stand out.
+            var enhanced = Math.max(0, Math.min(255, (gray - 128) * 1.55 + 128));
+            data[i] = data[i + 1] = data[i + 2] = enhanced;
           }
+          ctx.putImageData(pixels, 0, 0);
           window.URL.revokeObjectURL(url);
           resolve(canvas);
         } catch (err) {
@@ -445,30 +336,18 @@
     var nativeScanner = nativeVinScanner();
     if (nativeScanner && nativeScanner.recognizeText) {
       if (status) status.textContent = 'Preparing photo for Android text recognition…';
-      function recognizeCanvas(canvas) {
-        var dataUrl = canvas.toDataURL('image/jpeg', 0.94);
+      prepareVinImage(file).then(function (canvas) {
+        var dataUrl = canvas.toDataURL('image/jpeg', 0.9);
         return nativeScanner.recognizeText({ imageBase64: dataUrl.split(',')[1] || '' });
-      }
-      // Run Android OCR against both contrast-enhanced and untouched versions.
-      // Some stamped VINs lose thin strokes during contrast enhancement.
-      prepareVinImage(file).then(function (enhancedCanvas) {
-        return recognizeCanvas(enhancedCanvas).then(function (enhancedResult) {
-          return prepareVinImage(file, true).then(function (originalCanvas) {
-            return recognizeCanvas(originalCanvas).then(function (originalResult) {
-              return { enhanced: enhancedResult || { text: '' }, original: originalResult || { text: '' } };
-            });
-          });
-        });
-      }).then(function (readings) {
-        var text = 'Enhanced photo pass:\\n' + (readings.enhanced.text || '') +
-          '\\n\\nOriginal photo pass:\\n' + (readings.original.text || '');
+      }).then(function (result) {
+        var text = result && result.text ? result.text : '';
         state.ocrRaw = text;
-        // Combine flat text with geometry-aware VIN-label/value pairs from both passes.
-        var candidates = extractVinCandidatesFromOcrResults([readings.enhanced, readings.original]);
+        var candidates = extractVinCandidates(text);
+        candidates.sort(function (a, b) { return Number(vinCheckDigitValid(b)) - Number(vinCheckDigitValid(a)); });
         if (candidates.length) {
           state.vinText = candidates[0];
           state.ocrStatus = candidates.length > 1
-            ? 'Android OCR found several possible VINs. The highest-ranked candidate is shown first using VIN structure and check-digit evidence; verify every character.'
+            ? 'Android OCR found several possible VINs. The best check-digit match is shown first; verify every character.'
             : (vinCheckDigitValid(candidates[0])
               ? 'Android OCR found a VIN with a consistent check digit. Verify every character before decoding.'
               : 'Android OCR found a possible VIN. Verify every character against the photo before decoding.');
@@ -506,12 +385,12 @@
       }).then(function () { return state.ocrWorker.recognize(file); })
         .then(function (retry) {
           var secondText = retry && retry.data ? retry.data.text : '';
-          var combinedText = String(firstText || '').trim() + '\n' + String(secondText || '').trim();
-          state.ocrRaw = 'Enhanced photo pass:\n' + String(firstText || '').trim() +
-            '\n\nOriginal photo pass:\n' + String(secondText || '').trim();
-          // Re-run the same label-aware parser over both passes instead of
-          // overriding its ranking with a check-digit-only sort.
-          return extractVinCandidates(combinedText);
+          var combined = firstCandidates.concat(extractVinCandidates(secondText));
+          var candidates = combined.filter(function (item, index) { return combined.indexOf(item) === index; });
+          candidates.sort(function (a, b) { return Number(vinCheckDigitValid(b)) - Number(vinCheckDigitValid(a)); });
+          state.ocrRaw = 'Enhanced photo pass:\\n' + String(firstText || '').trim() +
+            '\\n\\nOriginal photo pass:\\n' + String(secondText || '').trim();
+          return candidates;
         });
     }).then(function (candidates) {
       if (candidates.length === 1) {
@@ -520,7 +399,7 @@
           ? 'VIN found; its check digit is consistent. Verify every character before decoding.'
           : 'Possible VIN found. Verify every character against the photo before decoding.';
       } else if (candidates.length > 1) {
-        state.ocrStatus = 'Several possible VIN readings were found. The highest-ranked candidate uses VIN structure and check-digit evidence; verify it against the photo.';
+        state.ocrStatus = 'Several possible VIN readings were found. The best checksum match is shown first; verify it against the photo.';
         state.vinText = candidates[0];
       } else {
         state.ocrStatus = 'OCR could not isolate a complete 17-character VIN. The raw readings are shown below so you can spot the characters it missed.';

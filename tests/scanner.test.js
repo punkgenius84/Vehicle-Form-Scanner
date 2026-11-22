@@ -38,11 +38,30 @@ const click = (w, el) => el.dispatchEvent(new w.MouseEvent('click', { bubbles: t
 const val = (d, k) => d.querySelector('#f-' + k).value;
 
 test('scanner code copied from the tow app is byte-for-byte unchanged', () => {
-  const towApp = path.join(__dirname, '..', '..', 'punkgenius84', 'tow-app', 'www', 'app.js');
-  if (!fs.existsSync(towApp)) return; // only runs where the tow app sits beside this project
-  const src = fs.readFileSync(towApp, 'utf8').replace(/\r/g, '').split('\n');
   const mine = fs.readFileSync(path.join(WWW, 'app.js'), 'utf8');
-  for (const [a, b] of [[228, 236], [284, 781], [917, 928]]) assert.ok(mine.includes(src.slice(a - 1, b).join('\n')), 'lines ' + a + '-' + b);
+  // Proven photo/OCR build (the Tow-App snapshot the phone test passed with).
+  const proven = path.join(__dirname, '..', '..', 'src', 'tow-app', 'www', 'app.js');
+  if (fs.existsSync(proven)) {
+    const src = fs.readFileSync(proven, 'utf8').replace(/\r/g, '').split('\n');
+    for (const [a, b] of [[228, 236], [284, 388], [487, 645], [781, 792]]) assert.ok(mine.includes(src.slice(a - 1, b).join('\n')), 'proven lines ' + a + '-' + b);
+  }
+  // startBarcodeScan from current Tow-App main, with the single marked VIN SCANNER CHANGE line.
+  const current = path.join(__dirname, '..', '..', 'punkgenius84', 'tow-app', 'www', 'app.js');
+  if (fs.existsSync(current)) {
+    const block = fs.readFileSync(current, 'utf8').split('\n').slice(500, 607).join('\n')
+      .replace("          var payload = result && (result.rawValue || result.vin || result.displayValue) || '';",
+        "          // VIN SCANNER CHANGE: use the VIN the native scanner already validated (seen twice), then the raw payload.\n          var payload = result && (result.vin || result.rawValue || result.displayValue) || '';");
+    assert.ok(mine.includes(block), 'current startBarcodeScan');
+  }
+});
+
+test('native scanner: validated vin is used even when the raw payload has extra text', async () => {
+  const native = { scanLiveBarcode: () => Promise.resolve({ cancelled: false, rawValue: 'PART 1234567 SN 99887766554433221', vin: VIN2, format: 'DATA_MATRIX' }) };
+  const { window: w } = boot({ native });
+  click(w, w.document.querySelector('#vin-barcode-start'));
+  await tick();
+  assert.equal(val(w.document, 'vin'), VIN2);
+  assert.match(w.document.querySelector('#vin-barcode-status').textContent, /native barcode scanner \(DATA_MATRIX\)/);
 });
 
 test('index.html references only files that exist and the SW caches them', () => {
