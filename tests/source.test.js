@@ -40,3 +40,29 @@ test('form contains VIN decoder and door label fields',()=>{
 test('a different VIN clears prior vehicle values before decoding',()=>{
  assert.match(app,/function beginVin\(vin,src\)\{if\(record\.vin&&record\.vin!==vin\)\{record=\{\};sources=\{\}\}/);
 });
+
+
+test('application JavaScript parses before Android packaging',()=>{
+ const { execFileSync } = require('node:child_process');
+ execFileSync(process.execPath,['--check','www/app.js'],{stdio:'pipe'});
+});
+test('barcode button calls the registered native scanner and consumes its payload',()=>{
+ const main=fs.readFileSync('android/app/src/main/java/com/vehicleform/scanner/MainActivity.java','utf8');
+ assert.match(main,/registerPlugin\(NativeVinScannerPlugin\.class\)/);
+ assert.match(app,/scanLiveBarcode\(\)/);
+ assert.match(app,/r\.rawValue\|\|r\.vin\|\|r\.displayValue/);
+ assert.match(plugin,/payload\.put\("rawValue", data\.getStringExtra\("rawValue"\)\)/);
+});
+test('photo OCR sends image data to the registered native ML Kit plugin',()=>{
+ assert.match(app,/recognizeText\(\{imageBase64:/);
+ assert.match(plugin,/call\.getString\("imageBase64"\)/);
+ assert.match(plugin,/TextRecognition\.getClient/);
+ assert.match(app,/prepareVinImage\(file,true\)/);
+});
+test('scanner Java files remain package-only copies of Tow-App implementation',()=>{
+ const fs2=require('node:fs');
+ const activityTow=fs2.readFileSync('tests/fixtures/TowApp-NativeBarcodeScannerActivity.java','utf8');
+ const pluginTow=fs2.readFileSync('tests/fixtures/TowApp-NativeVinScannerPlugin.java','utf8');
+ assert.equal(activity,activityTow.replaceAll('com.bigjaysstowing.towguide','com.vehicleform.scanner'));
+ assert.equal(plugin,pluginTow.replaceAll('com.bigjaysstowing.towguide','com.vehicleform.scanner'));
+});
