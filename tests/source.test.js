@@ -14,6 +14,9 @@ test('Big Jay identity and Java namespace stay consistent',()=>{
  assert.ok(gradle.includes('com.bigjaysstowing.vinscanner'));
  assert.ok(plugin.includes('package com.bigjaysstowing.towguide'));
  assert.ok(main.includes('registerPlugin(NativeVinScannerPlugin.class)'));
+ assert.ok(main.includes('registerPlugin(CameraPlugin.class)'));
+ assert.ok(!html.includes('christina.jpg'));
+ assert.ok(html.includes('icons/icon.svg'));
  assert.ok(manifest.includes("Big Jay's VIN Scanner"));
 });
 test('Google Play barcode scanner and ML Kit OCR are connected',()=>{
@@ -49,8 +52,16 @@ test('camera buttons use the native Camera plugin separately from gallery select
  assert.ok(html.includes('id="plateCamera"'));
  assert.ok(html.includes('camera.bundle.js'));
  assert.ok(camera.includes("@capacitor/camera"));
+ assert.ok(camera.includes('CameraSource.Photos'));
+ assert.ok(app.includes("capturePhoto('PHOTOS'"));
+ assert.ok(app.includes('rawBytesBase64'));
+ assert.ok(plugin.includes('getDisplayValue()'));
+ assert.ok(fs.readFileSync('www/sw.js','utf8').includes('big-jays-vin-scanner-v2'));
  assert.ok(app.includes('window.NativeCamera'));
  assert.ok(app.includes("$('#plateCamera').addEventListener"));
+ assert.ok(app.includes("$('#vinGallery').addEventListener"));
+ assert.ok(app.includes("$('#doorGallery').addEventListener"));
+ assert.ok(app.includes("$('#plateGallery').addEventListener"));
 });
 test('saved vehicle cards expand and load every saved field',()=>{
  assert.ok(app.includes('<details class="saved-record">'));
