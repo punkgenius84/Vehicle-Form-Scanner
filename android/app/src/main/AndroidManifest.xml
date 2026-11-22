@@ -1,11 +1,1 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
- <uses-permission android:name="android.permission.INTERNET"/>
- <uses-permission android:name="android.permission.CAMERA"/>
- <uses-feature android:name="android.hardware.camera" android:required="false"/>
- <application android:icon="@drawable/christina" android:allowBackup="false" android:label="Christina’s Way Scanner" android:theme="@style/AppTheme">
-  <activity android:name=".NativeBarcodeScannerActivity" android:label="VIN Barcode Scanner" android:theme="@style/AppTheme" android:screenOrientation="portrait" android:exported="false"/>
-  <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation">
-   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
-  </activity>
- </application>
-</manifest>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.INTERNET"/><uses-permission android:name="android.permission.CAMERA"/><uses-feature android:name="android.hardware.camera" android:required="false"/><application android:icon="@drawable/ic_launcher" android:allowBackup="false" android:label="Big Jay's VIN Scanner" android:theme="@style/AppTheme"><activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity><meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="barcode_ui,ocr"/></application></manifest>
