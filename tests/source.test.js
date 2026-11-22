@@ -20,6 +20,11 @@ test('Big Jay identity and Java namespace stay consistent',()=>{
  assert.ok(!html.includes('christina.jpg'));
  assert.ok(html.includes('icons/icon.svg'));
  assert.ok(manifest.includes("Big Jay's VIN Scanner"));
+ assert.ok(manifest.includes('androidx.core.content.FileProvider'));
+ assert.ok(manifest.includes('${applicationId}.fileprovider'));
+ const filePaths=fs.readFileSync('android/app/src/main/res/xml/file_paths.xml','utf8');
+ assert.ok(filePaths.includes('<cache-path'));
+ assert.ok(filePaths.includes('<external-path'));
 });
 test('Google Play barcode scanner and ML Kit OCR are connected',()=>{
  assert.ok(plugin.includes('public void scanLiveBarcode'));
