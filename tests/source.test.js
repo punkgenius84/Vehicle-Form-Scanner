@@ -36,3 +36,7 @@ test('tire and loading label scanning is not part of this app',()=>{
 test('form contains VIN decoder and door label fields',()=>{
  for(const id of ['vin','year','make','model','gvwr','frontGawr','rearGawr']) assert.match(app,new RegExp("['\"]"+id+"['\"]"));
 });
+
+test('a different VIN clears prior vehicle values before decoding',()=>{
+ assert.match(app,/function beginVin\(vin,src\)\{if\(record\.vin&&record\.vin!==vin\)\{record=\{\};sources=\{\}\}/);
+});
