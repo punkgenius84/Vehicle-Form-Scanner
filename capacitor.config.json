@@ -1,0 +1,13 @@
+{
+  "appId": "com.bigjaysstowing.vinscanner",
+  "appName": "Big Jay's VIN Scanner",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

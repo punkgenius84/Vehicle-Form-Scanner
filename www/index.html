@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#071b3b">
+  <meta name="color-scheme" content="dark light">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <title>Big Jay's VIN Scanner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="no-tabs">
+  <header class="top">
+    <div class="brand"><img class="brand-logo" src="assets/branding/Big%20Jays%20web%20site%20logo.png" alt="Big Jay’s Towing Auto Centre logo"> <span>VIN Scanner</span></div>
+    <div id="net" class="net">Online</div>
+  </header>
+
+  <main aria-live="polite">
+    <section class="stack">
+      <div class="card stack">
+        <div class="label">SCAN VIN WITH CAMERA</div>
+        <label class="f">Fastest: scan the VIN barcode on the vehicle label</label>
+        <video id="vin-barcode-video" class="vin-preview barcode-video" autoplay muted playsinline hidden></video>
+        <button class="btn block" id="vin-barcode-start" type="button">Start barcode scan</button>
+        <div id="vin-barcode-status" class="muted" aria-live="polite">Point the camera at the VIN barcode and hold steady. Supports common 1D and 2D barcode formats.</div>
+        <div class="divider-text">OR USE A PHOTO</div>
+        <label class="f" for="vin-photo">Photograph the VIN text on the windshield or driver-door label</label>
+        <input id="vin-photo" type="file" accept="image/*" capture="environment">
+        <div class="muted">OCR is the fallback when there is no readable barcode. Recognition runs on this device; the photo is not uploaded or saved by this app.</div>
+        <img id="vin-preview" class="vin-preview" alt="VIN photo preview" hidden>
+        <button class="btn block" id="vin-ocr" type="button">Read VIN from photo</button>
+        <div id="vin-ocr-status" class="muted" aria-live="polite">Camera scan works best in good light with minimal glare.</div>
+        <details id="ocr-raw-box" class="muted" hidden><summary>See what OCR actually read</summary><pre id="ocr-raw" class="ocr-raw"></pre></details>
+      </div>
+      <div class="card stack">
+        <div class="label">OR ENTER VIN MANUALLY</div>
+        <label class="f" for="vin">17-character VIN (NHTSA lookup needs internet)</label>
+        <input id="vin" autocapitalize="characters" autocomplete="off" maxlength="17" placeholder="1FTFW1E50NFA00000" value="">
+        <button class="btn block" id="vin-go">Decode VIN</button>
+        <div class="muted">Uses the free US government (NHTSA) VIN service. Drive type, powertrain and transmission come from the VIN. Weight and clearance still come from the database or your measurements.</div>
+      </div>
+
+      <div id="msg" class="notice" hidden></div>
+
+      <div class="card stack">
+        <div class="row-head"><div class="label">VEHICLE INFO</div><button class="btn ghost small" id="new-scan" type="button">New scan</button></div>
+        <div id="form"></div>
+        <div class="grid2">
+          <button class="btn ghost" id="copy-all" type="button">Copy all</button>
+          <button class="btn ghost" id="share-all" type="button">Share</button>
+        </div>
+      </div>
+
+      <div class="card stack">
+        <div class="label">LAST 6 SCANS</div>
+        <div id="history"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="data.js"></script>
+  <script src="engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
