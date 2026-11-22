@@ -7,6 +7,7 @@ const gradle=fs.readFileSync('android/app/build.gradle','utf8');
 const manifest=fs.readFileSync('android/app/src/main/AndroidManifest.xml','utf8');
 const plugin=fs.readFileSync('android/app/src/main/java/com/bigjaysstowing/towguide/NativeVinScannerPlugin.java','utf8');
 const main=fs.readFileSync('android/app/src/main/java/com/bigjaysstowing/towguide/MainActivity.java','utf8');
+const camera=fs.readFileSync('camera-entry.js','utf8');
 test('Big Jay identity and Java namespace stay consistent',()=>{
  assert.ok(html.includes("BIG JAY'S VIN SCANNER"));
  assert.ok(gradle.includes('com.bigjaysstowing.towguide'));
@@ -40,4 +41,19 @@ test('recent vehicle history remains local and capped at six',()=>{
 });
 test('app JavaScript parses before Android packaging',()=>{
  require('node:child_process').execFileSync(process.execPath,['--check','www/app.js']);
+});
+
+test('camera buttons use the native Camera plugin separately from gallery selection',()=>{
+ assert.ok(html.includes('id="vinCamera"'));
+ assert.ok(html.includes('id="doorCamera"'));
+ assert.ok(html.includes('id="plateCamera"'));
+ assert.ok(html.includes('camera.bundle.js'));
+ assert.ok(camera.includes("@capacitor/camera"));
+ assert.ok(app.includes('window.NativeCamera'));
+ assert.ok(app.includes("$('#plateCamera').addEventListener"));
+});
+test('saved vehicle cards expand and load every saved field',()=>{
+ assert.ok(app.includes('<details class="saved-record">'));
+ assert.ok(app.includes('data-load='));
+ assert.ok(app.includes('Loaded saved vehicle into editable form.'));
 });
