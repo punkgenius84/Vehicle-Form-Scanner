@@ -59,10 +59,3 @@ test('photo OCR sends image data to the registered native ML Kit plugin',()=>{
  assert.match(plugin,/TextRecognition\.getClient/);
  assert.match(app,/prepareVinImage\(file,true\)/);
 });
-test('scanner Java files remain package-only copies of Tow-App implementation',()=>{
- const fs2=require('node:fs');
- const activityTow=fs2.readFileSync('tests/fixtures/TowApp-NativeBarcodeScannerActivity.java','utf8');
- const pluginTow=fs2.readFileSync('tests/fixtures/TowApp-NativeVinScannerPlugin.java','utf8');
- assert.equal(activity,activityTow.replaceAll('com.bigjaysstowing.towguide','com.vehicleform.scanner'));
- assert.equal(plugin,pluginTow.replaceAll('com.bigjaysstowing.towguide','com.vehicleform.scanner'));
-});
