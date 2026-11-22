@@ -21,3 +21,18 @@ test('native OCR returns text and spatial line data',()=>{
  assert.match(plugin,/TextRecognition\.getClient/);
  assert.match(plugin,/response\.put\("lines", lines\)/);
 });
+
+test('restored Tow-App VIN extraction and two-pass OCR pipeline is present',()=>{
+ assert.match(app,/extractVinCandidatesFromOcrResults/);
+ assert.match(app,/prepareVinImage\(file,true\)/);
+ assert.match(app,/recognizeCanvas/);
+ assert.match(app,/extractBarcodeVin/);
+});
+test('tire and loading label scanning is not part of this app',()=>{
+ const html=fs.readFileSync('www/index.html','utf8');
+ assert.doesNotMatch(app,/tirePhoto|tireSize|tirePressure/);
+ assert.doesNotMatch(html,/tire|loading label/i);
+});
+test('form contains VIN decoder and door label fields',()=>{
+ for(const id of ['vin','year','make','model','gvwr','frontGawr','rearGawr']) assert.match(app,new RegExp("['\"]"+id+"['\"]"));
+});
