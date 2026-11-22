@@ -23,14 +23,14 @@ The small note under each field says where the value came from.
 
 ## Code reuse from the tow app
 
-The scanning code is copied **line-for-line, unchanged** from `tow-app/www/app.js`:
-- `copyText` / `fallbackCopy` (lines 228-236)
-- VIN extraction, check digit, barcode engine, native scanner bridge, `startBarcodeScan`, OCR engine and `scanVinPhoto` (lines 284-645)
-- the `vin-photo` change handler (lines 781-792)
+The scanner is copied **line-for-line, unchanged** from the current Tow-App on GitHub (`main` @ `ba33f3a`):
+- `www/app.js`: `copyText` (lines 228-236), all VIN scanning and OCR code (lines 284-781) and the `vin-photo` change handler (lines 917-928), marked `COPIED UNCHANGED` in this app's `www/app.js`
+- `NativeVinScannerPlugin.java`, `NativeBarcodeScannerActivity.java` (continuous CameraX + ML Kit barcode scanner), `MainActivity.java`, `AndroidManifest.xml`, `proguard-rules.pro`
+- the CameraX / ML Kit dependencies in `android/app/build.gradle`
 
-It is marked `COPIED UNCHANGED` in `www/app.js`. `NativeVinScannerPlugin.java` and `MainActivity.java` are byte-identical to the tow app, and so are `engine.js` and `data.js`. The new code only reads what the scanner puts into `state.vinText` / `state.ocrRaw`.
+`engine.js` and `data.js` are also identical. The form code only reads what the scanner puts in `state.vinText` / `state.ocrRaw`.
 
-The Android `namespace` stays `com.bigjaysstowing.towguide` so the Java files did not need to change. The **applicationId** is `com.bigjaysstowing.vinscanner`, so this installs alongside the tow app instead of replacing it.
+The Android `namespace` stays `com.bigjaysstowing.towguide` so the Java files need no edits; the **applicationId** is `com.bigjaysstowing.vinscanner`, so this installs alongside the tow app.
 
 ## Build the APK (no npm needed on your PC)
 

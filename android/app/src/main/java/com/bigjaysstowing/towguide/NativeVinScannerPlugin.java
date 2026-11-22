@@ -1,116 +1,50 @@
 package com.bigjaysstowing.towguide;
 
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.os.Handler;
-import android.os.Looper;
+import android.graphics.Rect;
 import android.util.Base64;
 
+import androidx.activity.result.ActivityResult;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import com.google.android.gms.common.moduleinstall.ModuleInstall;
-import com.google.android.gms.common.moduleinstall.ModuleInstallRequest;
-import com.google.android.gms.common.moduleinstall.ModuleInstallClient;
-import com.google.mlkit.vision.barcode.common.Barcode;
 import com.google.mlkit.vision.text.TextRecognition;
 import com.google.mlkit.vision.text.TextRecognizer;
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanner;
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
 
 @CapacitorPlugin(name = "NativeVinScanner")
 public class NativeVinScannerPlugin extends Plugin {
 
-    private static final long MODULE_CHECK_INTERVAL_MS = 750L;
-    private static final int MAX_MODULE_CHECKS = 80;
-
     @PluginMethod
-    public void scanBarcode(PluginCall call) {
-        // Ask ML Kit to accept every standard format. VIN labels vary by
-        // manufacturer and may use formats beyond the common Code 39/PDF417.
-        GmsBarcodeScannerOptions options = new GmsBarcodeScannerOptions.Builder()
-            .setBarcodeFormats(Barcode.FORMAT_ALL_FORMATS)
-            .enableAutoZoom()
-            .build();
-
-        GmsBarcodeScanner scanner = GmsBarcodeScanning.getClient(getContext(), options);
-        ModuleInstallClient moduleInstallClient = ModuleInstall.getClient(getContext());
-
-        // A sideloaded APK may not have received the Play-services scanner UI
-        // module at install time. Explicitly request it and wait until ready
-        // before opening the camera; otherwise the first scan can be a no-op.
-        moduleInstallClient.areModulesAvailable(scanner)
-            .addOnSuccessListener(getActivity(), availability -> {
-                if (availability.areModulesAvailable()) {
-                    launchScanner(scanner, call);
-                    return;
-                }
-
-                ModuleInstallRequest request = ModuleInstallRequest.newBuilder()
-                    .addApi(scanner)
-                    .build();
-
-                moduleInstallClient.installModules(request)
-                    .addOnSuccessListener(getActivity(), response -> {
-                        if (response.areModulesAlreadyInstalled()) {
-                            launchScanner(scanner, call);
-                        } else {
-                            waitForScannerModule(moduleInstallClient, scanner, call, 0);
-                        }
-                    })
-                    .addOnFailureListener(getActivity(), error ->
-                        call.reject("Could not install Google's barcode scanner module: "
-                            + error.getMessage(), error));
-            })
-            .addOnFailureListener(getActivity(), error ->
-                call.reject("Could not check barcode scanner availability: "
-                    + error.getMessage(), error));
+    public void scanLiveBarcode(PluginCall call) {
+        Intent intent = new Intent(getContext(), NativeBarcodeScannerActivity.class);
+        startActivityForResult(call, intent, "scanLiveBarcodeResult");
     }
 
-    private void waitForScannerModule(
-        ModuleInstallClient client,
-        GmsBarcodeScanner scanner,
-        PluginCall call,
-        int attempt
-    ) {
-        if (attempt >= MAX_MODULE_CHECKS) {
-            call.reject("Google's barcode scanner module did not finish installing. "
-                + "Check that Google Play services is updated and try again.");
+    @ActivityCallback
+    private void scanLiveBarcodeResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null) {
+            JSObject cancelled = new JSObject();
+            cancelled.put("cancelled", true);
+            cancelled.put("permissionDenied", result.getData() != null && result.getData().getBooleanExtra("permissionDenied", false));
+            call.resolve(cancelled);
             return;
         }
-
-        new Handler(Looper.getMainLooper()).postDelayed(() ->
-            client.areModulesAvailable(scanner)
-                .addOnSuccessListener(getActivity(), availability -> {
-                    if (availability.areModulesAvailable()) {
-                        launchScanner(scanner, call);
-                    } else {
-                        waitForScannerModule(client, scanner, call, attempt + 1);
-                    }
-                })
-                .addOnFailureListener(getActivity(), error ->
-                    call.reject("Could not verify barcode scanner installation: "
-                        + error.getMessage(), error)),
-            MODULE_CHECK_INTERVAL_MS);
-    }
-
-    private void launchScanner(GmsBarcodeScanner scanner, PluginCall call) {
-        scanner.startScan()
-            .addOnSuccessListener(getActivity(), barcode -> {
-                JSObject result = new JSObject();
-                result.put("rawValue", barcode.getRawValue());
-                result.put("format", barcode.getFormat());
-                call.resolve(result);
-            })
-            .addOnCanceledListener(getActivity(), () ->
-                call.reject("Barcode scan cancelled."))
-            .addOnFailureListener(getActivity(), error ->
-                call.reject("Barcode scanner failed: " + error.getMessage(), error));
+        Intent data = result.getData();
+        JSObject payload = new JSObject();
+        payload.put("cancelled", false);
+        payload.put("rawValue", data.getStringExtra("rawValue"));
+        payload.put("vin", data.getStringExtra("vin"));
+        payload.put("format", data.getStringExtra("format"));
+        call.resolve(payload);
     }
 
     @PluginMethod
@@ -131,12 +65,35 @@ public class NativeVinScannerPlugin extends Plugin {
                 return;
             }
 
+            // JS normalizes EXIF orientation before exporting this JPEG.
             InputImage image = InputImage.fromBitmap(bitmap, 0);
             recognizer.process(image)
                 .addOnSuccessListener(getActivity(), text -> {
-                    JSObject result = new JSObject();
-                    result.put("text", text.getText());
-                    call.resolve(result);
+                    JSObject response = new JSObject();
+                    response.put("text", text.getText());
+                    // Preserve ML Kit's spatial OCR data; flat text loses the relationship
+                    // between a VIN label and a value printed beside it.
+                    JSArray lines = new JSArray();
+                    for (com.google.mlkit.vision.text.Text.TextBlock block : text.getTextBlocks()) {
+                        for (com.google.mlkit.vision.text.Text.Line line : block.getLines()) {
+                            JSObject item = new JSObject();
+                            item.put("text", line.getText());
+                            item.put("angle", line.getAngle());
+                            item.put("confidence", line.getConfidence());
+                            Rect bounds = line.getBoundingBox();
+                            if (bounds != null) {
+                                item.put("left", bounds.left);
+                                item.put("top", bounds.top);
+                                item.put("right", bounds.right);
+                                item.put("bottom", bounds.bottom);
+                                item.put("width", bounds.width());
+                                item.put("height", bounds.height());
+                            }
+                            lines.put(item);
+                        }
+                    }
+                    response.put("lines", lines);
+                    call.resolve(response);
                 })
                 .addOnFailureListener(getActivity(), error ->
                     call.reject("Android text recognition failed: " + error.getMessage(), error))

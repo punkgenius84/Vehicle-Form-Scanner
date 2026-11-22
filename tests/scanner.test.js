@@ -28,7 +28,7 @@ function boot(opts) {
   const w = dom.window;
   w.scrollTo = () => {};
   w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(opts.json || nhtsa()) });
-  if (opts.native) w.Capacitor = { Plugins: { NativeVinScanner: opts.native } };
+  if (opts.native) w.Capacitor = { getPlatform: () => 'android', Plugins: { NativeVinScanner: opts.native } };
   if (opts.history) w.localStorage.setItem('vinscanner.recent.v1', JSON.stringify(opts.history));
   for (const f of ['data.js', 'engine.js', 'app.js']) w.eval(fs.readFileSync(path.join(WWW, f), 'utf8'));
   return dom;
@@ -38,11 +38,11 @@ const click = (w, el) => el.dispatchEvent(new w.MouseEvent('click', { bubbles: t
 const val = (d, k) => d.querySelector('#f-' + k).value;
 
 test('scanner code copied from the tow app is byte-for-byte unchanged', () => {
-  const towApp = path.join(__dirname, '..', '..', 'src', 'tow-app', 'www', 'app.js');
+  const towApp = path.join(__dirname, '..', '..', 'punkgenius84', 'tow-app', 'www', 'app.js');
   if (!fs.existsSync(towApp)) return; // only runs where the tow app sits beside this project
   const src = fs.readFileSync(towApp, 'utf8').replace(/\r/g, '').split('\n');
   const mine = fs.readFileSync(path.join(WWW, 'app.js'), 'utf8');
-  for (const [a, b] of [[228, 236], [284, 645], [781, 792]]) assert.ok(mine.includes(src.slice(a - 1, b).join('\n')), 'lines ' + a + '-' + b);
+  for (const [a, b] of [[228, 236], [284, 781], [917, 928]]) assert.ok(mine.includes(src.slice(a - 1, b).join('\n')), 'lines ' + a + '-' + b);
 });
 
 test('index.html references only files that exist and the SW caches them', () => {
@@ -53,14 +53,14 @@ test('index.html references only files that exist and the SW caches them', () =>
   for (const f of ['index.html', 'styles.css', 'data.js', 'engine.js', 'app.js']) assert.ok(sw.includes("'" + f + "'"), f);
 });
 
-test('native barcode scan fills the form, decodes with NHTSA and saves to history', async () => {
+test('native CameraX barcode scan fills the form, decodes with NHTSA and saves to history', async () => {
   let calls = 0;
-  const native = { scanBarcode: () => { calls++; return Promise.resolve(calls === 1 ? { rawValue: 'NOT A VIN 12345' } : { rawValue: 'I' + VIN2 }); } };
+  const native = { scanLiveBarcode: () => { calls++; return Promise.resolve({ cancelled: false, rawValue: 'I' + VIN2, format: 'CODE_39' }); } };
   const { window: w } = boot({ native });
   const d = w.document;
   click(w, d.querySelector('#vin-barcode-start'));
   await tick();
-  assert.equal(calls, 2, 'reopens scanner until a VIN is found');
+  assert.equal(calls, 1, 'uses the native CameraX scanner');
   assert.equal(val(d, 'vin'), VIN2);
   assert.equal(val(d, 'source'), 'Barcode scan');
   assert.equal(val(d, 'year'), '2022');
@@ -167,7 +167,7 @@ test('bad manual VIN is rejected and offline decode keeps the VIN', async () => 
 test('review fixes: sticker photo flags only when no VIN was read; cancel, delete and new-scan behave', async () => {
   let reply = { rawValue: VIN2 };
   let ocr = { text: 'GVWR 6100 LB' };
-  const native = { scanBarcode: () => Promise.resolve(reply), recognizeText: () => Promise.resolve(ocr) };
+  const native = { scanLiveBarcode: () => Promise.resolve(reply), recognizeText: () => Promise.resolve(ocr) };
   const { window: w } = boot({ native });
   const d = w.document;
   w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
@@ -199,7 +199,7 @@ test('review fixes: sticker photo flags only when no VIN was read; cancel, delet
   assert.doesNotMatch(d.querySelector('#f-gvwr').parentNode.textContent, /confirm same vehicle/);
 
   // Cancelled scan leaves the form alone.
-  native.scanBarcode = () => Promise.reject(new Error('Barcode scan cancelled.'));
+  native.scanLiveBarcode = () => Promise.resolve({ cancelled: true });
   click(w, d.querySelector('#vin-barcode-start'));
   await tick();
   assert.equal(val(d, 'vin'), VIN2);
@@ -225,7 +225,7 @@ test('review fixes: sticker photo flags only when no VIN was read; cancel, delet
 });
 
 test('scan panel is the tow app panel: same labels, photo waits for the Read button', () => {
-  const towApp = path.join(__dirname, '..', '..', 'src', 'tow-app', 'www', 'app.js');
+  const towApp = path.join(__dirname, '..', '..', 'punkgenius84', 'tow-app', 'www', 'app.js');
   const html = fs.readFileSync(path.join(WWW, 'index.html'), 'utf8');
   if (fs.existsSync(towApp)) {
     const src = fs.readFileSync(towApp, 'utf8');
