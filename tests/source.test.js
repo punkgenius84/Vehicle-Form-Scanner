@@ -14,7 +14,8 @@ test('Big Jay identity and Java namespace stay consistent',()=>{
  assert.ok(gradle.includes('com.bigjaysstowing.vinscanner'));
  assert.ok(plugin.includes('package com.bigjaysstowing.towguide'));
  assert.ok(main.includes('registerPlugin(NativeVinScannerPlugin.class)'));
- assert.ok(main.includes('registerPlugin(CameraPlugin.class)'));
+ assert.ok(!main.includes('CameraPlugin.class'));
+ assert.ok(fs.readFileSync('android/settings.gradle','utf8').includes("apply from: 'capacitor.settings.gradle'"));
  assert.ok(!html.includes('christina.jpg'));
  assert.ok(html.includes('icons/icon.svg'));
  assert.ok(manifest.includes("Big Jay's VIN Scanner"));
