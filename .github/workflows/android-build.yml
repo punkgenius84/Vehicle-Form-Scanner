@@ -1,4 +1,4 @@
-name: Android debug build
+name: Big Jay's VIN Scanner Android build
 on:
   push:
     branches: [main, work/vehicle-form-scanner]
@@ -29,7 +29,7 @@ jobs:
         working-directory: android
       - uses: actions/upload-artifact@v4
         with:
-          name: vehicle-form-scanner-debug-apk
+          name: big-jays-vin-scanner-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
