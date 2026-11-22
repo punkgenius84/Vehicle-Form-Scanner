@@ -20,6 +20,7 @@ jobs:
           distribution: temurin
           java-version: 17
       - run: npm install
+      - run: npm test
       - run: npx cap sync android
       - uses: gradle/actions/setup-gradle@v4
         with:
