@@ -711,23 +711,40 @@
     if (box) box.value = state.vinText;
     if (status) status.textContent = state.ocrStatus;
   }
-  function retrySideways(cands) {
-    var reader = sidewaysReader(), status = $('#vin-ocr-status');
-    sidewaysTried = state.ocrRaw;
-    if (status) status.textContent = 'No VIN that checks out yet. Reading the photo turned sideways…';
+  // Every photo is read three ways: as taken (the tow-app reader's pass), turned 90 and turned 270 degrees.
+  // Google's reader is told the photo is upright and handles horizontal text best, so a VIN running vertically
+  // is read reliably by one of the turned passes. The VIN that passes the VIN rules in the most passes wins;
+  // a tie goes to the photo as taken. Door-sticker values come from the pass that read the most of the sticker.
+  function readAllWays(firstCands) {
+    var reader = sidewaysReader(), status = $('#vin-ocr-status'), upright = state.ocrRaw;
+    sidewaysTried = upright;
+    if (status) status.textContent = 'Reading the photo turned sideways too…';
     prepareVinImage(state.vinFile).then(function (canvas) {
-      var angles = [90, 270], i = 0;
-      function next() {
-        if (i >= angles.length) return null;
-        var c = turned(canvas, angles[i++]);
-        return reader.recognizeText({ imageBase64: c.toDataURL('image/jpeg', 0.9).split(',')[1] || '' }).then(function (r) {
-          return extractVinCandidates(r && r.text ? r.text : '').filter(strongVin)[0] || next();
-        });
+      var texts = [];
+      function pass(deg) {
+        var c = turned(canvas, deg);
+        return reader.recognizeText({ imageBase64: c.toDataURL('image/jpeg', 0.9).split(',')[1] || '' })
+          .then(function (r) { texts.push(r && r.text ? r.text : ''); }, function () { texts.push(''); });
       }
-      return next();
-    }).catch(function () { return null; }).then(function (found) {
-      settlePhotoVin(found || null, cands, !!found);
-      renderVin();   // carries on exactly like a normal read; this photo is not tried again
+      return pass(90).then(function () { return pass(270); }).then(function () { return texts; });
+    }).catch(function () { return []; }).then(function (turnedTexts) {
+      var reads = [upright].concat(turnedTexts), tally = {}, order = [], all = [];
+      reads.forEach(function (text, i) {
+        var cands = extractVinCandidates(text);
+        cands.forEach(function (v) { if (all.indexOf(v) === -1) all.push(v); });
+        cands.filter(strongVin).filter(function (v, k, arr) { return arr.indexOf(v) === k; }).forEach(function (v) {
+          if (!tally[v]) { tally[v] = { n: 0, first: i }; order.push(v); }
+          tally[v].n++;
+        });
+      });
+      order.sort(function (x, y) { return tally[y].n - tally[x].n || tally[x].first - tally[y].first; });
+      var best = order[0] || null;
+      // Door-sticker values: the pass that read the most of the sticker (the photo as taken wins a tie).
+      var stickerText = upright, most = Object.keys(parseDoorSticker(upright)).length;
+      turnedTexts.forEach(function (t) { var n = Object.keys(parseDoorSticker(t)).length; if (n > most) { most = n; stickerText = t; } });
+      if (stickerText !== upright) { state.ocrRaw = stickerText; sidewaysTried = stickerText; }
+      settlePhotoVin(best, all.length ? all : firstCands, !!best && tally[best].first > 0);
+      renderVin();   // carries on exactly like a normal read; this photo is not read again
     });
   }
 
@@ -738,7 +755,7 @@
     if (!newVin && !newOcr) return;
     if (newOcr && pendingSource === 'Photo (OCR)' && state.ocrRaw !== sidewaysTried) {
       var cands = extractVinCandidates(state.ocrRaw), best = cands.filter(strongVin)[0];
-      if (!best && state.vinFile && sidewaysReader()) return retrySideways(cands);
+      if (state.vinFile && sidewaysReader()) return readAllWays(cands);
       sidewaysTried = state.ocrRaw;
       settlePhotoVin(best, cands, false);
       vin = state.vinText;

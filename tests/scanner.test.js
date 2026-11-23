@@ -491,7 +491,7 @@ function photoApp(readings) {
 test('door sticker photo read sideways: second read turned finds the VIN that passes the check digit', async () => {
   const { d, read, calls } = photoApp([STICKER_FIRST_READ, 'MADE IN JAPAN\n' + MAZDA_VIN + '\nTYPE: PASS CAR']);
   await read();
-  assert.equal(calls(), 2, 'first read + one turned read');
+  assert.equal(calls(), 3, 'as taken + turned 90 + turned 270');
   assert.equal(val(d, 'vin'), MAZDA_VIN);
   assert.equal(d.querySelector('#vin').value, MAZDA_VIN);
   assert.match(d.querySelector('#vin-ocr-status').textContent, /turned sideways; its check digit is consistent/);
@@ -510,11 +510,20 @@ test('windshield photo with the VIN running vertically: found on the second turn
   assert.equal(val(d, 'vin'), MAZDA_VIN);
 });
 
-test('a photo that reads fine the first time is never read again', async () => {
-  const { d, read, calls } = photoApp(['VIN ' + MAZDA_VIN]);
+test('a photo that reads fine as taken keeps that reading (turned passes agree or find nothing)', async () => {
+  const { d, read, calls } = photoApp(['VIN ' + MAZDA_VIN, 'garbage', 'garbage']);
   await read();
-  assert.equal(calls(), 1);
+  assert.equal(calls(), 3);
   assert.equal(val(d, 'vin'), MAZDA_VIN);
+  assert.doesNotMatch(d.querySelector('#vin-ocr-status').textContent, /turned sideways/);
+});
+
+test('vertical VIN: a misread that happens to pass as taken loses to the VIN both turned passes agree on', async () => {
+  // '1HGCM82633A004352' is a valid VIN that could come out of a garbled reading; the turned passes both read the real one.
+  const { d, read } = photoApp(['VIN 1HGCM82633A004352', MAZDA_VIN, MAZDA_VIN]);
+  await read();
+  assert.equal(val(d, 'vin'), MAZDA_VIN);
+  assert.match(d.querySelector('#vin-ocr-status').textContent, /turned sideways/);
 });
 
 test('no VIN even sideways: behaves exactly like the working build did', async () => {
@@ -529,7 +538,7 @@ test('the junk reading from the phone is rejected even though it passes the chec
   // Exactly what the phone produced: junk that passes the check digit, the real VIN line misread.
   const { d, read, calls } = photoApp([STICKER_FIRST_READ.replace('JMIGJIW63EII4Z29Z', 'JMIGJIW63EII4Z29Z ON THE DATE OF MANUFAC'), MAZDA_VIN]);
   await read();
-  assert.equal(calls(), 2, 'junk is not accepted, so the photo is read turned');
+  assert.equal(calls(), 3, 'junk is not accepted; the turned passes find the VIN');
   assert.equal(val(d, 'vin'), MAZDA_VIN);
 });
 
@@ -573,7 +582,7 @@ test('real phone reading of the Mazda sticker: VIN, GVWR, both axles and build d
 
   const { d, read, calls } = photoApp([MAZDA_STICKER_PHONE]);
   await read();
-  assert.equal(calls(), 1, 'VIN read on the first pass, no sideways retry');
+  assert.equal(calls(), 3, 'always read three ways');
   assert.equal(val(d, 'vin'), MAZDA_VIN);
   assert.equal(val(d, 'gvwr'), '4288');
   assert.equal(val(d, 'gawrFront'), '2269');
