@@ -622,11 +622,77 @@
     return keys.length;
   }
 
+  /* ---------- picking the VIN out of a photo reading ---------- */
+  // The tow-app reader ranks every 17-character stretch of text by the check digit, and plain words pass it by
+  // chance about 1 time in 11 (a door sticker gave "NTHEDATE0FMANUFAC"). Every VIN also ends in 4 digits, so:
+  // 1. a reading that ends in 4 digits AND passes the check digit;
+  // 2. if none, the same photo turned a quarter turn each way (VINs often run vertically in the photo);
+  // 3. if still none, a reading that ends in 4 digits, to verify (some foreign VINs don't use the check digit);
+  // 4. otherwise no VIN rather than a word.
+  // Photos whose reading already gives (1) are handled exactly as before.
+  var sidewaysTried = '';
+  function vinShape(v) { return /^[A-HJ-NPR-Z0-9]{13}[0-9]{4}$/.test(v || '') && !/[UZ0]/.test(v.charAt(9)); }
+  function strongVin(v) { return vinShape(v) && vinCheckDigitValid(v); }
+  function sidewaysReader() {
+    var n = nativeVinScanner();
+    return n && n.recognizeText ? n : null;
+  }
+  function turned(canvas, deg) {
+    var c = document.createElement('canvas');
+    c.width = canvas.height; c.height = canvas.width;
+    var ctx = c.getContext('2d');
+    ctx.translate(c.width / 2, c.height / 2);
+    ctx.rotate(deg * Math.PI / 180);
+    ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+    return c;
+  }
+  function settlePhotoVin(best, cands, sideways) {
+    var pick = best || cands.filter(vinShape)[0] || '';
+    var box = $('#vin'), status = $('#vin-ocr-status');
+    if (pick) {
+      state.vinText = pick;
+      if (sideways) state.ocrStatus = 'VIN found with the photo turned sideways; its check digit is consistent. Verify every character.';
+      else if (!best) state.ocrStatus = 'Possible VIN found, but its check digit doesn’t match (normal for some non-US vehicles). Verify every character.';
+    } else {
+      state.vinText = handledVin || '';
+      state.ocrStatus = 'No VIN found in this photo, even turned sideways. Try a closer, straight-on photo in good light, or type the VIN below. The raw text is shown below.';
+    }
+    if (box) box.value = state.vinText;
+    if (status) status.textContent = state.ocrStatus;
+  }
+  function retrySideways(cands) {
+    var reader = sidewaysReader(), status = $('#vin-ocr-status');
+    sidewaysTried = state.ocrRaw;
+    if (status) status.textContent = 'No VIN that checks out yet. Reading the photo turned sideways…';
+    prepareVinImage(state.vinFile).then(function (canvas) {
+      var angles = [90, 270], i = 0;
+      function next() {
+        if (i >= angles.length) return null;
+        var c = turned(canvas, angles[i++]);
+        return reader.recognizeText({ imageBase64: c.toDataURL('image/jpeg', 0.9).split(',')[1] || '' }).then(function (r) {
+          return extractVinCandidates(r && r.text ? r.text : '').filter(strongVin)[0] || next();
+        });
+      }
+      return next();
+    }).catch(function () { return null; }).then(function (found) {
+      settlePhotoVin(found || null, cands, !!found);
+      renderVin();   // carries on exactly like a normal read; this photo is not tried again
+    });
+  }
+
   function processCapture() {
     var vin = state.vinText;
     var newVin = !!vin && vin !== handledVin;
     var newOcr = !!state.ocrRaw && state.ocrRaw !== handledOcr;
     if (!newVin && !newOcr) return;
+    if (newOcr && pendingSource === 'Photo (OCR)' && state.ocrRaw !== sidewaysTried) {
+      var cands = extractVinCandidates(state.ocrRaw), best = cands.filter(strongVin)[0];
+      if (!best && state.vinFile && sidewaysReader()) return retrySideways(cands);
+      sidewaysTried = state.ocrRaw;
+      settlePhotoVin(best, cands, false);
+      vin = state.vinText;
+      newVin = !!vin && vin !== handledVin;
+    }
     var sticker = newOcr ? parseDoorSticker(state.ocrRaw) : {};
     if (newOcr) handledOcr = state.ocrRaw;
     if (newVin) { handledVin = vin; startRecord(vin, pendingSource || 'Manual entry'); }
@@ -837,7 +903,8 @@
   function pickVinFromGallery() {
     var plugin = galleryPlugin(), status = $('#vin-ocr-status');
     if (!plugin) { var input = $('#vin-gallery'); if (input) input.click(); return; }   // plain browser: file picker
-    plugin.getPhoto({ source: 'PHOTOS', resultType: 'dataUrl', quality: 92, correctOrientation: true, width: 2400, height: 2400 })
+    // Full size and full quality: the tow-app reader then scales it exactly as it does a camera photo.
+    plugin.getPhoto({ source: 'PHOTOS', resultType: 'dataUrl', quality: 100, correctOrientation: true })
       .then(function (photo) {
         if (!photo || !photo.dataUrl) throw new Error('No photo came back from the gallery. Try again.');
         setVinPhoto(dataUrlToFile(photo.dataUrl));

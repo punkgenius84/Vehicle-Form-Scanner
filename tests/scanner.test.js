@@ -360,7 +360,7 @@ test('old saved scans with a single tire size/pressure still load', () => {
   assert.equal(val(w.document, 'psiFront'), '36');
 });
 
-test('main is the working build (a895c81) plus only the VIN gallery button', () => {
+test('main is the working build (a895c81) with additions only (gallery button, sideways retry)', () => {
   const { execSync } = require('child_process');
   let diff;
   try { diff = execSync('git diff a895c81 -- www/app.js www/index.html', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }); } catch (e) { return; }
@@ -456,4 +456,78 @@ test('gallery button in a plain browser falls back to the file picker', () => {
   w.document.querySelector('#vin-gallery').click = () => { inputClicked = true; };
   click(w, w.document.querySelector('#vin-gallery-btn'));
   assert.equal(inputClicked, true);
+});
+
+// What the reader returned on the phone for the user's two photos (VIN running vertically), and the real VIN.
+const MAZDA_VIN = 'JM1GJ1W63E1142292';
+const STICKER_FIRST_READ = 'MFD. BY MAZDA MOTOR CORPORATION\nGVWR/PNBV GAWR/PNBE FRT GAWR/PNBE RR\nDATE 09/13 4288LB 2269 LB 2030 LB\n' +
+  'THIS VEHICLE CONFORMS TO ALL APPLICABLE FEDERAL MOTOR VEHICLE SAFETY\nSTANDARDS IN EFFECT ON THE DATE OF MANUFACTURE SHOWN ABOVE.\n' +
+  'JMIGJIW63EII4Z29Z\nTYPE: PASS CAR\nMADE IN JAPAN';
+const WINDSHIELD_FIRST_READ = 'JM1 G\nJ1W\n63E1\n142\n292';
+
+function photoApp(readings) {
+  let calls = 0;
+  const native = { recognizeText: () => { const t = readings[Math.min(calls, readings.length - 1)]; calls++; return Promise.resolve({ text: t }); } };
+  const { window: w } = boot({ native });
+  const d = w.document;
+  const ctx = { drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {}, translate() {}, rotate() {} };
+  w.HTMLCanvasElement.prototype.getContext = () => ctx;
+  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
+  const RealImage = w.Image;
+  w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 4032 }); Object.defineProperty(img, 'naturalHeight', { value: 1816 }); setTimeout(() => img.onload(), 0); return img; };
+  w.URL.createObjectURL = () => 'blob:s'; w.URL.revokeObjectURL = () => {};
+  const read = async () => {
+    w.__vin.state.vinFile = new w.File(['x'], 'p.jpg', { type: 'image/jpeg' });
+    click(w, d.querySelector('#vin-ocr'));
+    for (let i = 0; i < 8; i++) await tick();
+  };
+  return { w, d, read, calls: () => calls };
+}
+
+test('door sticker photo read sideways: second read turned finds the VIN that passes the check digit', async () => {
+  const { d, read, calls } = photoApp([STICKER_FIRST_READ, 'MADE IN JAPAN\n' + MAZDA_VIN + '\nTYPE: PASS CAR']);
+  await read();
+  assert.equal(calls(), 2, 'first read + one turned read');
+  assert.equal(val(d, 'vin'), MAZDA_VIN);
+  assert.equal(d.querySelector('#vin').value, MAZDA_VIN);
+  assert.match(d.querySelector('#vin-ocr-status').textContent, /turned sideways; its check digit is consistent/);
+  assert.equal(val(d, 'source'), 'Photo (OCR)');
+});
+
+test('windshield photo with the VIN running vertically: found on the second turn', async () => {
+  const { d, read, calls } = photoApp([WINDSHIELD_FIRST_READ, 'JMI GJ', MAZDA_VIN]);
+  await read();
+  assert.equal(calls(), 3, 'first read, then 90 and 270 degrees');
+  assert.equal(val(d, 'vin'), MAZDA_VIN);
+});
+
+test('a photo that reads fine the first time is never read again', async () => {
+  const { d, read, calls } = photoApp(['VIN ' + MAZDA_VIN]);
+  await read();
+  assert.equal(calls(), 1);
+  assert.equal(val(d, 'vin'), MAZDA_VIN);
+});
+
+test('no VIN even sideways: behaves exactly like the working build did', async () => {
+  const { d, read, calls } = photoApp(['ON THE DATE OF MANUFACTURE SHOWN ABOVE', 'nothing', 'nothing']);
+  await read();
+  assert.equal(calls(), 3);
+  assert.equal(val(d, 'vin'), '', 'a word is never filled in as a VIN');
+  assert.match(d.querySelector('#vin-ocr-status').textContent, /No VIN found in this photo, even turned sideways/);
+});
+
+test('the junk reading from the phone is rejected even though it passes the check digit', async () => {
+  // Exactly what the phone produced: junk that passes the check digit, the real VIN line misread.
+  const { d, read, calls } = photoApp([STICKER_FIRST_READ.replace('JMIGJIW63EII4Z29Z', 'JMIGJIW63EII4Z29Z ON THE DATE OF MANUFAC'), MAZDA_VIN]);
+  await read();
+  assert.equal(calls(), 2, 'junk is not accepted, so the photo is read turned');
+  assert.equal(val(d, 'vin'), MAZDA_VIN);
+});
+
+test('a foreign VIN without a check digit still fills in, flagged to verify', async () => {
+  const { d, read, calls } = photoApp(['VIN WVWZZZ1KZ6W000123', 'nothing', 'nothing']);
+  await read();
+  assert.equal(calls(), 3);
+  assert.equal(val(d, 'vin'), 'WVWZZZ1KZ6W000123');
+  assert.match(d.querySelector('#vin-ocr-status').textContent, /check digit doesn’t match/);
 });
