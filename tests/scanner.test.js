@@ -560,3 +560,30 @@ test('Mazda door sticker: headings side by side, numbers in the row below, in an
   const bad = p('GVWR/PNBV GAWR/PNBE FRT GAWR/PNBE RR\n2269 LB 4288 LB 2030 LB');
   assert.equal(bad.gvwr, undefined);
 });
+
+// Exact text the phone's reader returned for the Mazda door sticker (22 Nov 2026 screenshot): GVWR's numbers come
+// before its heading, the front heading has a stray backslash ("GA\\WR"), and the date sits under "DATE".
+const MAZDA_STICKER_PHONE = "MFD. BY MAZDA MOTOR CORPORATION\nGAWR/ PNBE RR\n2030 LB\n921 KG\nTHIS VEHICLE CONFORMS TO ALL\nAPPLICABLE FEDERAL MOTOR VEHICLE\nSAFETY\nBUMPER AND THEFT PRE VENTI ON\nSTANDARDS IN EFFECT ON THE DATE OF\nMANUFACTURE SHOWN ABOVE,\n4288LB\n1945KG\nGA\\WR/PNBE FRT\n2269 LB\n1029 KG\nGVWR/PNBV\n09/13\nDATE\nTYPE: PASS CAR\nJM1GJ1W63E1142292\nMADE IN JAPAN\nBODY COLOR CODE38P\n";
+
+test('real phone reading of the Mazda sticker: VIN, GVWR, both axles and build date', async () => {
+  const { window: w } = boot();
+  assert.deepEqual(JSON.parse(JSON.stringify(w.__vin.parseDoorSticker(MAZDA_STICKER_PHONE))),
+    { gawrFront: '2269', gawrRear: '2030', gvwr: '4288', mfgDate: '09/2013' });
+  assert.equal(w.__vin.extractVinCandidates(MAZDA_STICKER_PHONE)[0], MAZDA_VIN);
+
+  const { d, read, calls } = photoApp([MAZDA_STICKER_PHONE]);
+  await read();
+  assert.equal(calls(), 1, 'VIN read on the first pass, no sideways retry');
+  assert.equal(val(d, 'vin'), MAZDA_VIN);
+  assert.equal(val(d, 'gvwr'), '4288');
+  assert.equal(val(d, 'gawrFront'), '2269');
+  assert.equal(val(d, 'gawrRear'), '2030');
+  assert.equal(val(d, 'mfgDate'), '09/2013');
+  assert.match(d.querySelector('#f-gvwr').parentNode.textContent, /From door sticker photo/);
+});
+
+test('sticker with headings side by side whose numbers do not add up fills no weights at all', () => {
+  const { window: w } = boot();
+  const bad = JSON.parse(JSON.stringify(w.__vin.parseDoorSticker('GVWR/PNBV GAWR/PNBE FRT GAWR/PNBE RR\n2269 LB 4288 LB 2030 LB')));
+  assert.equal(bad.gvwr, undefined); assert.equal(bad.gawrFront, undefined); assert.equal(bad.gawrRear, undefined);
+});

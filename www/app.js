@@ -576,9 +576,10 @@
     // Labels are often bilingual ("GVWR/PNBV", "GAWR FRT/PNBE AV"); swallow the French half too.
     var gvwr = weightAfter(/\b(GVWR|GVW|PNBV)\b(\s*\/?\s*PNBV\b)?/, 2000, 40000);
     // "GAWR FRT/PNBE AV" and Mazda's "GAWR/PNBE FRT" both name the front axle.
-    var FRONT_H = /\bGAWR\s*(\/\s*PNBE\s*)?(FRT|FR|FRONT|F)\b(\s*\/?\s*PNBE(\s*AV)?\b)?/;
-    var REAR_H = /\bGAWR\s*(\/\s*PNBE\s*)?(RR|REAR|R)\b(\s*\/?\s*PNBE(\s*AR)?\b)?/;
-    var GVWR_H = /\b(GVWR|GVW|PNBV)\b(\s*\/?\s*PNBV\b)?/;
+    // A stray symbol inside the word is tolerated: the phone read "GA\WR/PNBE FRT".
+    var FRONT_H = /\bG[^A-Z0-9\s]?A[^A-Z0-9\s]?W[^A-Z0-9\s]?R\s*(\/\s*PNBE\s*)?(FRT|FR|FRONT|F)\b(\s*\/?\s*PNBE(\s*AV)?\b)?/;
+    var REAR_H = /\bG[^A-Z0-9\s]?A[^A-Z0-9\s]?W[^A-Z0-9\s]?R\s*(\/\s*PNBE\s*)?(RR|REAR|R)\b(\s*\/?\s*PNBE(\s*AR)?\b)?/;
+    var GVWR_H = /\b(G[^A-Z0-9\s]?V[^A-Z0-9\s]?W[^A-Z0-9\s]?R|GVW|PNBV)\b(\s*\/?\s*PNBV\b)?/;
     var front = weightAfter(FRONT_H, 1000, 25000);
     var rear = weightAfter(REAR_H, 1000, 25000);
     if (gvwr) out.gvwr = gvwr;
@@ -608,6 +609,21 @@
         var g = byHead.gvwr, fr = byHead.gawrFront, rr = byHead.gawrRear;
         var sane = g >= 2000 && g <= 40000 && fr >= 1000 && rr >= 1000 && g >= Math.max(fr, rr) && g <= (fr + rr) * 1.05;
         if (sane) { out.gvwr = g; out.gawrFront = fr; out.gawrRear = rr; }
+        else { delete out.gvwr; delete out.gawrFront; delete out.gawrRear; }   // "next number" is meaningless here
+      }
+    }
+    // GVWR missing (or not fitting) while both axle ratings were found: the phone can return GVWR's numbers
+    // before its heading. Take the remaining LB value that fits: at least each axle, at most both together.
+    if (out.gawrFront && out.gawrRear) {
+      var fA = +out.gawrFront, rA = +out.gawrRear;
+      var fits = function (g) { return g >= 2000 && g <= 40000 && g >= Math.max(fA, rA) && g <= (fA + rA) * 1.05; };
+      if (!out.gvwr || !fits(+out.gvwr)) {
+        var pool = [], pm, pre = /(\d[\d,]{2,5})\s*LBS?\b/g;
+        while ((pm = pre.exec(flat))) pool.push(parseInt(pm[1].replace(/,/g, ''), 10));
+        if (pool.length < 3) { pool = []; pre = /(\d[\d,]{2,5})\s*KG\b/g; while ((pm = pre.exec(flat))) pool.push(Math.round(parseInt(pm[1].replace(/,/g, ''), 10) * 2.20462)); }
+        [fA, rA].forEach(function (v) { var k = pool.indexOf(v); if (k >= 0) pool.splice(k, 1); });   // the axle values themselves
+        var gFit = pool.filter(fits).sort(function (a, b) { return b - a; })[0];
+        if (gFit) out.gvwr = gFit; else delete out.gvwr;
       }
     }
     var date = /\b(MFD|MFG|DATE|MANUFACTURED)\b\D{0,25}?\b(0?[1-9]|1[0-2])\s*[\/\-.]?\s*(20\d{2}|\d{2})\b/.exec(flat);
