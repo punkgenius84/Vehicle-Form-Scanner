@@ -746,6 +746,58 @@
     return out;
   }
 
+  /* ---------- VIN rules: fix photo misreads ---------- */
+  // Every VIN: characters 14-17 are digits; the 9th (check digit) is a digit or X and is computed from the other 16.
+  // A photo reading that breaks these has a misread character; try the usual look-alikes until it checks out.
+  var LOOKALIKE = { S: '5', '5': 'S', B: '8', '8': 'B', Z: '2', '2': 'Z', G: '6', '6': 'G', D: '0', '0': 'D',
+    T: '7', '7': 'T', A: '4', '4': 'A', L: '1', '1': 'L' };
+  var TO_DIGIT = { S: '5', B: '8', Z: '2', G: '6', D: '0', T: '7', A: '4', L: '1', U: '0' };
+  function vinAllowed(ch, i) {
+    if (!/[A-HJ-NPR-Z0-9]/.test(ch)) return false;
+    if (i === 8) return /[0-9X]/.test(ch);           // check digit
+    if (i === 9) return !/[UZ0]/.test(ch);          // model year: never U, Z or 0
+    if (i >= 13) return /[0-9]/.test(ch);           // last four are always digits
+    return true;
+  }
+  function correctVin(vin) {
+    var chars = String(vin || '').split(''), changes = [];
+    if (chars.length !== 17) return { vin: vin, changes: [], valid: false, suggestion: null };
+    chars.forEach(function (c, i) {                 // letters where only digits are allowed
+      if (!vinAllowed(c, i) && TO_DIGIT[c] && vinAllowed(TO_DIGIT[c], i)) { changes.push({ pos: i + 1, from: c, to: TO_DIGIT[c] }); chars[i] = TO_DIGIT[c]; }
+    });
+    var fixed = chars.join('');
+    if (vinCheckDigitValid(fixed)) return { vin: fixed, changes: changes, valid: true, suggestion: null };
+    var swaps = [];
+    chars.forEach(function (c, i) { if (LOOKALIKE[c] && vinAllowed(LOOKALIKE[c], i)) swaps.push(i); });
+    function tryDepth(depth) {
+      var found = [];
+      function walk(start, arr, made) {
+        if (made.length === depth) {
+          var v = arr.join('');
+          if (vinCheckDigitValid(v)) found.push({ vin: v, made: made.slice() });
+          return;
+        }
+        for (var k = start; k < swaps.length; k++) {
+          var i = swaps[k], was = arr[i];
+          arr[i] = LOOKALIKE[was];
+          made.push({ pos: i + 1, from: was, to: arr[i] });
+          walk(k + 1, arr, made);
+          made.pop(); arr[i] = was;
+        }
+      }
+      walk(0, chars.slice(), []);
+      return found;
+    }
+    // Beyond the safe digit-only fixes, at most one look-alike swap is offered as a suggestion, never applied.
+    if (changes.length) return { vin: fixed, changes: changes, valid: false, suggestion: null };   // already changed one: stop
+    var hits = tryDepth(1);
+    // Offered, never applied: a lone passing swap is right for look-alike misreads but can pass by coincidence otherwise.
+    return { vin: fixed, changes: changes, valid: false, suggestion: hits.length === 1 ? { vin: hits[0].vin, change: hits[0].made[0] } : null };
+  }
+  function describeChanges(ch) {
+    return ch.map(function (c) { return 'character ' + c.pos + ' ' + c.from + '→' + c.to; }).join(', ');
+  }
+
   /* ---------- turning a scanned VIN into a filled form ---------- */
   function startRecord(vin, source) {
     var prior = findHistory(vin);
@@ -775,7 +827,26 @@
     if (!newVin && !newOcr) return;
     var sticker = newOcr ? parseDoorSticker(state.ocrRaw) : {};
     if (newOcr) handledOcr = state.ocrRaw;
-    if (newVin) { handledVin = vin; startRecord(vin, pendingSource || 'Manual entry'); }
+    var vinNote = '', suggestion = null;
+    if (newVin && pendingSource === 'Photo (OCR)') {
+      var fix = correctVin(vin);
+      if (fix.vin !== vin) {
+        vinNote = 'Photo read ' + vin + '. Fixed using VIN rules: ' + describeChanges(fix.changes) + '.';
+        vin = fix.vin; state.vinText = vin;
+        var box = $('#vin'); if (box) box.value = vin;
+      }
+      if (!fix.valid) {
+        suggestion = fix.suggestion;
+        vinNote = (vinNote ? vinNote + ' ' : '') + (suggestion
+          ? 'The check digit doesn’t match: character ' + suggestion.change.pos + ' reads ' + suggestion.change.from +
+            ' but is probably ' + suggestion.change.to + '. Check the vehicle and tap the fix below, or correct the VIN box and tap Decode VIN.'
+          : 'The check digit doesn’t match, so at least one character is misread. Compare it with the vehicle, fix it in the VIN box and tap Decode VIN.');
+      }
+    }
+    if (newVin) {
+      handledVin = vin; startRecord(vin, pendingSource || 'Manual entry');
+      if (vinNote) current.hints.vin = vinNote;
+    }
     // A sticker photo where no VIN could be read is added to the vehicle on screen, flagged so it gets checked.
     var noVinInPhoto = newOcr && !newVin && !extractVinCandidates(state.ocrRaw).length;
     var stickerCount = applySticker(sticker, noVinInPhoto ? 'From door sticker photo - no VIN read in photo, confirm same vehicle' : '');
@@ -787,10 +858,38 @@
     saveRecord(current);
     renderForm();
     renderHistory();
-    if (newVin) decodeVinFields(vin);
+    if (newVin && suggestion) return showVinFix(vinNote, suggestion);   // decode after the person picks
+    if (newVin) decodeVinFields(vin, vinNote);
   }
 
-  function decodeVinFields(vin) {
+  function showVinFix(note, sug) {
+    setMsg(note, true);
+    var m = $('#msg');
+    if (!m) return;
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn block'; b.id = 'use-vin-fix'; b.setAttribute('data-vin', sug.vin);
+    b.setAttribute('data-change', 'character ' + sug.change.pos + ' ' + sug.change.from + '→' + sug.change.to);
+    b.textContent = 'Use ' + sug.vin + ' (character ' + sug.change.pos + ': ' + sug.change.from + '→' + sug.change.to + ')';
+    m.appendChild(b);
+  }
+
+  // The person confirmed the suggested fix: re-file what was read under the corrected VIN, then decode.
+  function useVinFix(newVin, what) {
+    var oldVin = current.fields.vin, carry = clone(current);
+    history = history.filter(function (h) { return h.vin !== oldVin; }); storeHistory();
+    delete carry.fields.vin; delete carry.fields.checkDigit; delete carry.hints.vin;
+    current = carry;
+    pendingSource = carry.fields.source || 'Photo (OCR)';
+    state.vinText = newVin; handledVin = '';
+    var box = $('#vin'); if (box) box.value = newVin;
+    var src = pendingSource; pendingSource = '';             // already corrected: skip the photo rules this time
+    handledVin = newVin; startRecord(newVin, src);
+    current.hints.vin = 'Photo read ' + oldVin + '; you confirmed the fix: ' + what + '.';
+    saveRecord(current); renderForm(); renderHistory();
+    decodeVinFields(newVin, 'Fixed ' + what + '.');
+  }
+
+  function decodeVinFields(vin, note) {
     setMsg('Looking up ' + vin + ' with NHTSA…');
     var ctl = ('AbortController' in window) ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 10000);
@@ -811,7 +910,9 @@
         if (keep.fields.vin !== vin) { current = keep; return renderHistory(); }
         renderHistory();
         renderForm();
-        setMsg('Decoded. Specs come from NHTSA, the door sticker and typical database values - verify on the vehicle.');
+        var nhtsaWarn = String(json.Results[0].ErrorCode || '0').split(',').map(function (c) { return c.trim(); })
+          .some(function (c) { return c && c !== '0'; }) ? ' NHTSA warning: ' + String(json.Results[0].ErrorText || '').split(';')[0] + '.' : '';
+        setMsg((note ? note + ' ' : '') + 'Decoded.' + nhtsaWarn + ' Specs come from NHTSA, the door sticker and typical database values - verify on the vehicle.', !!(nhtsaWarn || (note && /misread|doesn’t match/.test(note))));
       })
       .catch(function () {
         clearTimeout(timer);
@@ -1071,6 +1172,7 @@
     if (t.id === 'vin-barcode-start') { pendingSource = 'Barcode scan'; return startBarcodeScan(); }
     if (t.id === 'vin-ocr') { pendingSource = 'Photo (OCR)'; return scanVinPhoto(); }
     if (t.id === 'tire-ocr' || t.id === 'odo-ocr') return readPhoto(t.id.split('-')[0]);
+    if (t.id === 'use-vin-fix') return useVinFix(t.getAttribute('data-vin'), t.getAttribute('data-change'));
     if (t.id === 'vin-go') {
       var vin = ($('#vin').value || '').trim().toUpperCase();
       state.vinText = vin;
@@ -1205,7 +1307,7 @@
   // exposed for tests
   window.__vin = {
     state: state, current: function () { return current; }, history: function () { return history; },
-    renderVin: renderVin, parseDoorSticker: parseDoorSticker, parseTirePlacard: parseTirePlacard, parseOdometer: parseOdometer, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
+    renderVin: renderVin, parseDoorSticker: parseDoorSticker, parseTirePlacard: parseTirePlacard, parseOdometer: parseOdometer, correctVin: correctVin, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
     extractBarcodeVin: extractBarcodeVin, extractVinCandidates: extractVinCandidates,
     nativeScannerAvailable: function () { var n = nativeVinScanner(); return !!(n && (n.scanBarcode || n.recognizeText)); }
   };

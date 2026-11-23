@@ -570,7 +570,7 @@ test('gallery photo: used as picked when it opens; otherwise copied/converted wi
   assert.equal(bitmapOpts && bitmapOpts.imageOrientation, 'from-image', 'rotation kept');
 });
 
-test('camera VIN photo path is exactly the build that read VINs (c32f901)', () => {
+test('VIN photo reader and door sticker code are exactly the build that read VINs (c32f901)', () => {
   const { execSync } = require('child_process');
   let good;
   try { good = execSync('git show c32f901:www/app.js', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }); } catch (e) { return; }
@@ -578,7 +578,77 @@ test('camera VIN photo path is exactly the build that read VINs (c32f901)', () =
   const between = (src, a, b) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a)));
   // Copied scanner block and the VIN photo/OCR handlers are identical.
   assert.equal(between(now, 'COPIED UNCHANGED', 'END OF COPIED BLOCK'), between(good, 'COPIED UNCHANGED', 'END OF COPIED BLOCK'));
-  assert.equal(between(now, 'function processCapture', 'function decodeVinFields'), between(good, 'function processCapture', 'function decodeVinFields'));
-  assert.equal(between(now, 'function parseDoorSticker', '/* ---------- turning'), between(good, 'function parseDoorSticker', '/* ---------- turning'));
+  assert.equal(between(now, 'function parseDoorSticker', '/* ---------- VIN rules'), between(good, 'function parseDoorSticker', '/* ---------- turning'));
   assert.equal(between(now, 'function renderVin', 'function renderForm'), between(good, 'function renderVin', 'function renderForm'));
+});
+
+test('VIN rules: safe digit-only fixes are applied, a look-alike swap is only suggested', () => {
+  const { window: w } = boot();
+  const fix = (v) => JSON.parse(JSON.stringify(w.__vin.correctVin(v)));
+  assert.deepEqual(fix(VIN), { vin: VIN, changes: [], valid: true, suggestion: null });
+  // Letter in the last four (always digits): Z -> 2, applied.
+  let r = fix('1HGCM82633A00435Z');
+  assert.equal(r.vin, VIN); assert.equal(r.valid, true);
+  assert.deepEqual(r.changes, [{ pos: 17, from: 'Z', to: '2' }]);
+  // Misread where letters are allowed (Z for 2): not applied, offered.
+  r = fix('1HGCM8Z633A004352');
+  assert.equal(r.vin, '1HGCM8Z633A004352'); assert.equal(r.valid, false);
+  assert.deepEqual(r.suggestion, { vin: VIN, change: { pos: 7, from: 'Z', to: '2' } });
+  // Two misreads: nothing applied beyond the rules, never two swaps.
+  r = fix('1HGCMB2G33A004352');
+  assert.equal(r.valid, false); assert.equal(r.vin, '1HGCMB2G33A004352');
+  // S read for 3 in the digits-only part: S becomes 5 (rule), check still fails, no further guessing.
+  r = fix('1HGCM82633A004S52');
+  assert.equal(r.valid, false); assert.equal(r.vin, '1HGCM82633A004552'); assert.equal(r.suggestion, null);
+  assert.deepEqual(r.changes, [{ pos: 15, from: 'S', to: '5' }]);
+});
+
+test('photo VIN: rule fix decodes right away; a suggested fix waits for a tap, then decodes', async () => {
+  let ocr = 'VIN 1HGCM82633A00435Z', looked = [];
+  const native = { recognizeText: () => Promise.resolve({ text: ocr }) };
+  const { window: w } = boot({ native });
+  const d = w.document;
+  w.fetch = (url) => { looked.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve(nhtsa()) }); };
+  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
+  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
+  const RealImage = w.Image;
+  w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 100 }); Object.defineProperty(img, 'naturalHeight', { value: 50 }); setTimeout(() => img.onload(), 0); return img; };
+  w.URL.createObjectURL = () => 'blob:v'; w.URL.revokeObjectURL = () => {};
+  const read = async () => {
+    w.__vin.state.vinFile = new w.File(['x'], 'v.jpg', { type: 'image/jpeg' });
+    click(w, d.querySelector('#vin-ocr'));
+    await tick(); await tick();
+  };
+
+  await read();
+  assert.equal(val(d, 'vin'), VIN);
+  assert.equal(d.querySelector('#vin').value, VIN);
+  assert.ok(looked[0].includes(VIN));
+  assert.equal(val(d, 'checkDigit'), 'Valid');
+  assert.match(d.querySelector('#msg').textContent, /Photo read 1HGCM82633A00435Z\. Fixed using VIN rules: character 17 Z→2\. Decoded\./);
+
+  // Look-alike in the middle: shown with a button, nothing decoded yet.
+  click(w, d.querySelector('#new-scan'));
+  looked = []; ocr = 'VIN 1HGCM8Z633A004352';
+  await read();
+  assert.equal(looked.length, 0, 'no decode of a VIN that fails its check');
+  const btn = d.querySelector('#use-vin-fix');
+  assert.ok(btn); assert.match(btn.textContent, /Use 1HGCM82633A004352 \(character 7: Z→2\)/);
+  assert.match(d.querySelector('#msg').textContent, /character 7 reads Z but is probably 2/);
+  // Tap it: corrected VIN decoded, the misread entry is gone from recent scans.
+  click(w, btn);
+  await tick();
+  assert.equal(val(d, 'vin'), VIN);
+  assert.equal(val(d, 'make'), 'Ford');
+  assert.equal(val(d, 'source'), 'Photo (OCR)');
+  assert.ok(looked[0].includes(VIN));
+  assert.equal(JSON.stringify(w.__vin.history().map(h => h.vin)), JSON.stringify([VIN]));
+  assert.match(d.querySelector('#f-vin').parentNode.textContent, /you confirmed the fix: character 7 Z→2/);
+
+  // NHTSA's own warning is passed on.
+  w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(nhtsa({ ErrorCode: '1', ErrorText: '1 - Check Digit (9th position) does not calculate properly' })) });
+  d.querySelector('#vin').value = '1HGCM82633A004353';
+  click(w, d.querySelector('#vin-go'));
+  await tick();
+  assert.match(d.querySelector('#msg').textContent, /NHTSA warning: 1 - Check Digit/);
 });
