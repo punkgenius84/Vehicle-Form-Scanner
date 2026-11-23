@@ -967,6 +967,42 @@
       });
   }
 
+  /* ---------- odometer photo (shown only; not read, not saved) ---------- */
+  var odo = { previewUrl: '' };
+  function showOdometer(file) {
+    var preview = $('#odo-preview'), status = $('#odo-status');
+    if (odo.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(odo.previewUrl);
+    odo.previewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+    if (preview) { preview.src = odo.previewUrl; preview.hidden = !odo.previewUrl; }
+    if (status && file) status.textContent = 'Odometer photo added.';
+  }
+  function clearOdometer() {
+    if (odo.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(odo.previewUrl);
+    odo.previewUrl = '';
+    ['#odo-photo', '#odo-gallery'].forEach(function (id) { var i = $(id); if (i) i.value = ''; });
+    var preview = $('#odo-preview'), status = $('#odo-status');
+    if (preview) { preview.removeAttribute('src'); preview.hidden = true; }
+    if (status) status.textContent = 'A photo of the odometer for your records. It stays on screen while you work on this vehicle; it is not read or saved.';
+  }
+  function pickOdometerFromGallery() {
+    var plugin = galleryPlugin(), status = $('#odo-status');
+    if (!plugin) { var input = $('#odo-gallery'); if (input) input.click(); return; }   // plain browser: file picker
+    plugin.getPhoto({ source: 'PHOTOS', resultType: 'dataUrl', quality: 100, correctOrientation: true })
+      .then(function (photo) {
+        if (!photo || !photo.dataUrl) throw new Error('No photo came back from the gallery. Try again.');
+        showOdometer(dataUrlToFile(photo.dataUrl));
+      })
+      .catch(function (err) {
+        var msg = err && err.message ? err.message : '';
+        if (status) status.textContent = /cancel/i.test(msg) ? 'No photo picked.' : (msg || 'Could not get the photo from the gallery.');
+      });
+  }
+  document.addEventListener('change', function (e) {
+    if (!e.target || (e.target.id !== 'odo-photo' && e.target.id !== 'odo-gallery')) return;
+    var file = e.target.files && e.target.files[0];
+    if (file) showOdometer(file);
+  });
+
   /* ---------- rendering ---------- */
   function setMsg(text, isErr) {
     var m = $('#msg');
@@ -1054,6 +1090,7 @@
     // Same three buttons, same functions as the tow app. Only the source label for the form is noted here.
     if (t.id === 'vin-barcode-start') { pendingSource = 'Barcode scan'; return startBarcodeScan(); }
     if (t.id === 'vin-gallery-btn') return pickVinFromGallery();
+    if (t.id === 'odo-gallery-btn') return pickOdometerFromGallery();
     if (t.id === 'vin-ocr') { pendingSource = 'Photo (OCR)'; return scanVinPhoto(); }
     if (t.id === 'tire-ocr') return readTirePhoto();
     if (t.id === 'vin-go') {
@@ -1070,6 +1107,7 @@
     }
     if (t.id === 'new-scan') {
       stopBarcodeScanner();
+      clearOdometer();
       current = blankRecord(); handledVin = ''; handledOcr = ''; state.vinText = ''; state.barcodeStatus = ''; state.ocrStatus = '';
       state.ocrRaw = ''; state.vinFile = null;
       if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);

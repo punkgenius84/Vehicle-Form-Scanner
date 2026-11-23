@@ -587,3 +587,35 @@ test('sticker with headings side by side whose numbers do not add up fills no we
   const bad = JSON.parse(JSON.stringify(w.__vin.parseDoorSticker('GVWR/PNBV GAWR/PNBE FRT GAWR/PNBE RR\n2269 LB 4288 LB 2030 LB')));
   assert.equal(bad.gvwr, undefined); assert.equal(bad.gawrFront, undefined); assert.equal(bad.gawrRear, undefined);
 });
+
+test('odometer photo: camera or gallery photo is shown in place, nothing on the form changes, New scan clears it', async () => {
+  const native = { scanLiveBarcode: () => Promise.resolve({ cancelled: false, vin: VIN2, rawValue: VIN2 }) };
+  const { window: w } = boot({ native });
+  const d = w.document;
+  let gal = null;
+  w.Capacitor.Plugins.Camera = { getPhoto: (o) => { gal = o; return Promise.resolve({ dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' }); } };
+  let n = 0; w.URL.createObjectURL = () => 'blob:odo' + (++n); w.URL.revokeObjectURL = () => {};
+  click(w, d.querySelector('#vin-barcode-start'));
+  await tick();
+  const before = JSON.stringify(w.__vin.current().fields), histBefore = JSON.stringify(w.__vin.history());
+  assert.equal(d.querySelector('#odo-photo').getAttribute('capture'), 'environment', 'opens the camera');
+  // Camera photo
+  const input = d.querySelector('#odo-photo');
+  Object.defineProperty(input, 'files', { value: [new w.File(['x'], 'odo.jpg', { type: 'image/jpeg' })], configurable: true });
+  input.dispatchEvent(new w.Event('change', { bubbles: true }));
+  assert.equal(d.querySelector('#odo-preview').hidden, false);
+  assert.equal(d.querySelector('#odo-preview').getAttribute('src'), 'blob:odo1');
+  assert.equal(d.querySelector('#odo-status').textContent, 'Odometer photo added.');
+  // Gallery photo replaces it
+  click(w, d.querySelector('#odo-gallery-btn'));
+  await tick();
+  assert.equal(gal.source, 'PHOTOS');
+  assert.equal(d.querySelector('#odo-preview').getAttribute('src'), 'blob:odo2');
+  // Nothing else changed
+  assert.equal(JSON.stringify(w.__vin.current().fields), before);
+  assert.equal(JSON.stringify(w.__vin.history()), histBefore);
+  // New scan clears it
+  click(w, d.querySelector('#new-scan'));
+  assert.equal(d.querySelector('#odo-preview').hidden, true);
+  assert.match(d.querySelector('#odo-status').textContent, /for your records/);
+});

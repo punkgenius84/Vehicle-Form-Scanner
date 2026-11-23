@@ -53,6 +53,16 @@
         <details id="tire-raw-box" class="muted" hidden><summary>See what OCR actually read</summary><pre id="tire-raw" class="ocr-raw"></pre></details>
       </div>
 
+      <div class="card stack">
+        <div class="label">ODOMETER PHOTO</div>
+        <label class="f" for="odo-photo">Take odometer photo</label>
+        <input id="odo-photo" type="file" accept="image/*" capture="environment">
+        <button class="btn ghost block" id="odo-gallery-btn" type="button">Choose photo from gallery</button>
+        <input id="odo-gallery" type="file" accept="image/*" hidden>
+        <img id="odo-preview" class="vin-preview" alt="Odometer photo" hidden>
+        <div id="odo-status" class="muted" aria-live="polite">A photo of the odometer for your records. It stays on screen while you work on this vehicle; it is not read or saved.</div>
+      </div>
+
       <div id="msg" class="notice" hidden></div>
 
       <div class="card stack">
