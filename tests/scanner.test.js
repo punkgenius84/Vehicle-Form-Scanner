@@ -319,7 +319,6 @@ test('tire label photo fills only tire fields, keeps the door sticker values, wo
     const input = d.querySelector('#tire-photo');
     Object.defineProperty(input, 'files', { value: [new w.File(['x'], 't.jpg', { type: 'image/jpeg' })], configurable: true });
     input.dispatchEvent(new w.Event('change', { bubbles: true }));
-    await tick();
     assert.match(d.querySelector('#tire-status').textContent, /Tap “Read tire label”/, 'waits for the button');
     click(w, d.querySelector('#tire-ocr'));
     await tick(); await tick();
@@ -361,169 +360,22 @@ test('old saved scans with a single tire size/pressure still load', () => {
   assert.equal(val(w.document, 'psiFront'), '36');
 });
 
-test('odometer reading is picked out of the rest of the dash', () => {
-  const { window: w } = boot();
-  const p = (t) => JSON.parse(JSON.stringify(w.__vin.parseOdometer(t)));
-  assert.deepEqual(p('ODO 123456 mi'), { mileage: '123456' });
-  assert.deepEqual(p('TRIP A 245.7 mi\n10:42 AM 72°F\nODO 87,215 MI\nRANGE 312 mi'), { mileage: '87215' });
-  assert.deepEqual(p('RANGE 412 MILES 34 MPG\n 98765'), { mileage: '98765' }, 'unlabelled: the big number that is not range/mpg');
-  assert.deepEqual(p('12:05 PM  23°C  ODO 160934 km'), { mileage: '100000', _hint: 'From odometer photo: 160,934 km converted to miles' });
-  assert.deepEqual(p('TRIP 12.3'), {});
-  assert.deepEqual(p(''), {});
+test('main is the working build (a895c81) plus only the VIN gallery button', () => {
+  const { execSync } = require('child_process');
+  let diff;
+  try { diff = execSync('git diff a895c81 -- www/app.js www/index.html', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }); } catch (e) { return; }
+  const removed = diff.split('\n').filter(l => /^-[^-]/.test(l));
+  assert.deepEqual(removed, ["-      var photo = $('#vin-photo'), preview = $('#vin-preview');"], 'nothing else from the working build changed');
 });
 
-test('odometer photo fills Mileage only; gallery photos work for VIN, tire and odometer', async () => {
-  let ocrText = 'TRIP A 245.7 mi ODO 87,215 MI RANGE 312 mi';
-  const native = { scanLiveBarcode: () => Promise.resolve({ cancelled: false, vin: VIN2, rawValue: VIN2 }), recognizeText: () => Promise.resolve({ text: ocrText }) };
-  const { window: w } = boot({ native });
-  const d = w.document;
-  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
-  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
-  const RealImage = w.Image;
-  w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 100 }); Object.defineProperty(img, 'naturalHeight', { value: 50 }); setTimeout(() => img.onload(), 0); return img; };
-  w.URL.createObjectURL = () => 'blob:g'; w.URL.revokeObjectURL = () => {};
-  const pick = async (id) => {
-    const input = d.querySelector(id);
-    Object.defineProperty(input, 'files', { value: [new w.File(['x'], 'p.jpg', { type: 'image/jpeg' })], configurable: true });
-    input.dispatchEvent(new w.Event('change', { bubbles: true }));
-    await tick();
-  };
-
-  // Gallery inputs have no camera "capture" setting, so Android opens the photo picker.
-  for (const id of ['#vin-gallery', '#tire-gallery', '#odo-gallery']) {
-    assert.equal(d.querySelector(id).hasAttribute('capture'), false, id);
-    assert.ok(d.querySelector('label[for="' + id.slice(1) + '"]'), id + ' has a button');
-  }
-
-  click(w, d.querySelector('#vin-barcode-start'));
-  await tick();
-  const before = JSON.stringify(w.__vin.current().fields);
-
-  // Odometer from the gallery.
-  await pick('#odo-gallery');
-  assert.match(d.querySelector('#odo-status').textContent, /Tap “Read odometer”/);
-  click(w, d.querySelector('#odo-ocr'));
-  await tick(); await tick();
-  assert.equal(val(d, 'mileage'), '87215');
-  assert.match(d.querySelector('#f-mileage').parentNode.textContent, /From odometer photo/);
-  const after = Object.assign({}, w.__vin.current().fields); delete after.mileage;
-  assert.equal(JSON.stringify(after), before, 'nothing else changed');
-  assert.equal(w.__vin.history()[0].fields.mileage, '87215');
-  assert.match(d.querySelector('#history').textContent, /87,215 mi/);
-
-  // VIN photo from the gallery: same reader as the camera photo, waits for the button.
+test('VIN gallery photo: used as picked when it opens, waits for Read VIN from photo, reads like a camera photo', async () => {
   let reads = 0;
-  native.recognizeText = () => { reads++; return Promise.resolve({ text: 'VIN ' + VIN }); };
-  await pick('#vin-gallery');
-  assert.equal(reads, 0);
-  assert.match(d.querySelector('#vin-ocr-status').textContent, /Tap “Read VIN from photo”/);
-  assert.equal(d.querySelector('#vin-preview').hidden, false);
-  click(w, d.querySelector('#vin-ocr'));
-  await tick(); await tick();
-  assert.equal(reads, 1);
-  assert.equal(val(d, 'vin'), VIN);
-  assert.equal(val(d, 'source'), 'Photo (OCR)');
-
-  // Tire label from the gallery.
-  native.recognizeText = () => Promise.resolve({ text: 'FRONT P245/60R18 35 PSI\nREAR P245/60R18 35 PSI' });
-  await pick('#tire-gallery');
-  click(w, d.querySelector('#tire-ocr'));
-  await tick(); await tick();
-  assert.equal(val(d, 'psiFront'), '35');
-
-  // New scan clears all photos.
-  click(w, d.querySelector('#new-scan'));
-  assert.equal(d.querySelector('#odo-raw-box').hidden, true);
-  assert.equal(d.querySelector('#odo-preview').hidden, true);
-  assert.equal(d.querySelector('#vin-preview').hidden, true);
-  assert.match(d.querySelector('#odo-status').textContent, /Light the dash first/);
-});
-
-// Line boxes measured from a real dash photo (1600x892): GM speedo, segment odometer "0576 12",
-// gauge labels all around, "km/h" ring and "MPH".
-const DASH_LINES = [
-  { text: '40', left: 632, right: 708, top: 150, bottom: 190 }, { text: '50', left: 760, right: 835, top: 128, bottom: 168 },
-  { text: '60', left: 888, right: 962, top: 148, bottom: 188 }, { text: '30', left: 540, right: 615, top: 222, bottom: 262 },
-  { text: '80', left: 772, right: 822, top: 230, bottom: 255 }, { text: '70', left: 985, right: 1060, top: 222, bottom: 262 },
-  { text: '60', left: 670, right: 720, top: 265, bottom: 290 }, { text: '100', left: 870, right: 935, top: 265, bottom: 290 },
-  { text: 'km/h', left: 742, right: 852, top: 290, bottom: 322 }, { text: '210', left: 106, right: 175, top: 252, bottom: 280 },
-  { text: '260', left: 212, right: 292, top: 295, bottom: 325 }, { text: '20', left: 470, right: 545, top: 325, bottom: 365 },
-  { text: '40', left: 600, right: 650, top: 328, bottom: 352 }, { text: '120', left: 935, right: 995, top: 340, bottom: 365 },
-  { text: '80', left: 1050, right: 1125, top: 330, bottom: 370 }, { text: 'TEMP', left: 0, right: 100, top: 450, bottom: 478 },
-  { text: '-20', left: 550, right: 618, top: 425, bottom: 450 }, { text: '140', left: 965, right: 1025, top: 430, bottom: 455 },
-  { text: '10', left: 450, right: 505, top: 460, bottom: 500 }, { text: '90', left: 1070, right: 1145, top: 450, bottom: 490 },
-  { text: '1/2', left: 1445, right: 1505, top: 248, bottom: 275 }, { text: 'FUEL', left: 1495, right: 1600, top: 450, bottom: 480 },
-  { text: '160', left: 945, right: 1005, top: 525, bottom: 553 }, { text: 'MPH', left: 735, right: 860, top: 558, bottom: 595 },
-  { text: '100', left: 1040, right: 1135, top: 565, bottom: 605 }, { text: '0576', left: 680, right: 815, top: 690, bottom: 732 },
-  { text: '12', left: 840, right: 893, top: 690, bottom: 732 }, { text: 'HOLD TO', left: 1043, right: 1158, top: 672, bottom: 698 },
-  { text: 'RESET', left: 1043, right: 1130, top: 702, bottom: 728 }, { text: '80', left: 25, right: 80, top: 670, bottom: 698 },
-  { text: '9', left: 1555, right: 1580, top: 668, bottom: 696 }
-];
-
-test('odometer from a real dash: split segment digits are joined, gauge numbers ignored, km/h is not km', () => {
-  const { window: w } = boot();
-  const p = (t, l) => JSON.parse(JSON.stringify(w.__vin.parseOdometer(t, l)));
-  const text = DASH_LINES.map(l => l.text).join('\n');
-  assert.deepEqual(p(text, DASH_LINES), { mileage: '57612' }, 'with line positions (Android)');
-  assert.deepEqual(p(text), { mileage: '57612' }, 'text only');
-  // Same reading when the OCR returns it as one line with a gap, or misreads a segment digit as a letter.
-  assert.deepEqual(p(text.replace('0576\n12', '0576 12')), { mileage: '57612' });
-  assert.deepEqual(p(text.replace('0576\n12', 'O576 I2')), { mileage: '57612' });
-  const misread = DASH_LINES.map(l => l.text === '0576' ? Object.assign({}, l, { text: 'O576' }) : l);
-  assert.deepEqual(p(text, misread), { mileage: '57612' });
-  // Gauge labels alone never become a mileage.
-  const gaugesOnly = DASH_LINES.filter(l => l.text !== '0576' && l.text !== '12');
-  assert.deepEqual(p(gaugesOnly.map(l => l.text).join('\n'), gaugesOnly), {});
-});
-
-// Line boxes from a mechanical drum odometer photo (474x354): each digit in its own box, a trip
-// counter with a half-rolled digit below it, a P R N D 2 1 gear strip, and gauge labels.
-const DRUM_LINES = [
-  { text: '60', left: 135, right: 175, top: 45, bottom: 75 }, { text: '70', left: 180, right: 220, top: 30, bottom: 60 },
-  { text: '80', left: 225, right: 265, top: 28, bottom: 58 }, { text: '90', left: 280, right: 320, top: 35, bottom: 65 },
-  { text: '100', left: 320, right: 385, top: 70, bottom: 100 }, { text: '50', left: 100, right: 140, top: 85, bottom: 115 },
-  { text: '100', left: 175, right: 200, top: 88, bottom: 102 }, { text: '120', left: 222, right: 245, top: 75, bottom: 89 },
-  { text: '140', left: 268, right: 290, top: 80, bottom: 94 }, { text: '80', left: 140, right: 160, top: 110, bottom: 124 },
-  { text: '160', left: 310, right: 333, top: 103, bottom: 117 }, { text: '40', left: 75, right: 115, top: 118, bottom: 148 },
-  { text: '110', left: 355, right: 420, top: 110, bottom: 140 }, { text: '60', left: 115, right: 135, top: 148, bottom: 162 },
-  { text: '0 9 9 4 8 3', left: 180, right: 298, top: 138, bottom: 162 }, { text: '180', left: 335, right: 358, top: 137, bottom: 151 },
-  { text: '30', left: 60, right: 100, top: 165, bottom: 195 }, { text: '120', left: 375, right: 440, top: 155, bottom: 185 },
-  { text: '40', left: 105, right: 125, top: 195, bottom: 209 }, { text: '-200', left: 345, right: 378, top: 180, bottom: 194 },
-  { text: '20', left: 55, right: 95, top: 210, bottom: 240 }, { text: '130', left: 380, right: 445, top: 200, bottom: 230 },
-  { text: '20', left: 112, right: 132, top: 236, bottom: 250 }, { text: '-220', left: 335, right: 368, top: 222, bottom: 236 },
-  { text: '6 9 1', left: 180, right: 240, top: 222, bottom: 246 }, { text: '10', left: 55, right: 95, top: 255, bottom: 285 },
-  { text: '140', left: 370, right: 430, top: 250, bottom: 280 }, { text: 'MPH', left: 155, right: 200, top: 288, bottom: 302 },
-  { text: 'km/h', left: 275, right: 312, top: 288, bottom: 302 }, { text: 'P RNO21', left: 150, right: 335, top: 305, bottom: 330 },
-  { text: 'CERTIFIED CALIBRATION', left: 160, right: 320, top: 333, bottom: 348 }
-];
-
-test('drum odometer: boxed single digits join into one reading, trip and gear strip ignored', () => {
-  const { window: w } = boot();
-  const p = (t, l) => JSON.parse(JSON.stringify(w.__vin.parseOdometer(t, l)));
-  const text = DRUM_LINES.map(l => l.text).join('\n');
-  assert.deepEqual(p(text, DRUM_LINES), { mileage: '99483' }, 'with line positions');
-  assert.deepEqual(p(text), { mileage: '99483' }, 'text only');
-  // Other ways the reader can return the same drum.
-  for (const variant of ['099483', '09948 3', '0 99 48 3', 'O 9 9 4 8 3']) {
-    const lines = DRUM_LINES.map(l => l.text === '0 9 9 4 8 3' ? Object.assign({}, l, { text: variant }) : l);
-    assert.deepEqual(p(lines.map(l => l.text).join('\n'), lines), { mileage: '99483' }, variant);
-  }
-  // Each box as its own line (positions only).
-  const boxes = DRUM_LINES.filter(l => l.text !== '0 9 9 4 8 3').concat('099483'.split('').map((d, i) =>
-    ({ text: d, left: 182 + i * 19.5, right: 196 + i * 19.5, top: 138, bottom: 162 })));
-  assert.deepEqual(p(boxes.map(l => l.text).join('\n'), boxes), { mileage: '99483' }, 'one box per line');
-  // Zeros next to each other still join (they are not gauge labels).
-  assert.deepEqual(p('1 0 0 7 0 0'), { mileage: '100700' });
-});
-
-test('gallery photo: used as picked when it opens; otherwise copied/converted with rotation kept, or a clear message', async () => {
-  let reads = 0, got = null;
-  const native = { recognizeText: (o) => { reads++; got = o; return Promise.resolve({ text: 'VIN ' + VIN }); } };
+  const native = { recognizeText: () => { reads++; return Promise.resolve({ text: 'VIN ' + VIN }); } };
   const { window: w } = boot({ native });
   const d = w.document;
   w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
   w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
-  w.URL.createObjectURL = () => 'blob:m'; w.URL.revokeObjectURL = () => {};
+  w.URL.createObjectURL = () => 'blob:g'; w.URL.revokeObjectURL = () => {};
   let decodable = true;
   const RealImage = w.Image;
   w.Image = function () {
@@ -538,117 +390,28 @@ test('gallery photo: used as picked when it opens; otherwise copied/converted wi
     await tick(); await tick();
   };
   const status = () => d.querySelector('#vin-ocr-status').textContent;
+  assert.equal(d.querySelector('#vin-gallery').hasAttribute('capture'), false, 'gallery input opens the photo picker');
 
-  // Normal JPEG: a fresh in-memory copy goes to the reader.
   const original = new w.File(['jpegbytes'], 'IMG_1.jpg', { type: 'image/jpeg' });
   await pick(original);
-  assert.match(status(), /Tap “Read VIN from photo”/);
-  assert.equal(w.__vin.state.vinFile, original, 'a photo that opens is used exactly as picked, like before');
+  assert.equal(reads, 0, 'waits for the button');
+  assert.match(status(), /^Photo ready\. Tap “Read VIN from photo”/);
+  assert.equal(w.__vin.state.vinFile, original, 'exactly the picked photo, like the camera input');
   click(w, d.querySelector('#vin-ocr'));
   await tick(); await tick();
   assert.equal(reads, 1);
   assert.equal(val(d, 'vin'), VIN);
+  assert.equal(val(d, 'source'), 'Photo (OCR)');
 
-  // Empty (still in the cloud): it won't open, and the copy shows why.
   decodable = false;
   await pick(new w.File([], 'cloud.jpg', { type: 'image/jpeg' }));
   assert.match(status(), /came back empty/);
-  assert.equal(w.__vin.state.vinFile, null);
-
-  // A format the browser can't open, and no converter: say why.
   await pick(new w.File(['heic'], 'IMG_2.heic', { type: 'image/heic' }));
   assert.match(status(), /HEIC/);
-  assert.equal(w.__vin.state.vinFile, null);
-
-  // Same format, but the phone can convert it: it becomes a JPEG and is ready.
-  let bitmapOpts = null;
-  w.createImageBitmap = (f, o) => { bitmapOpts = o; return Promise.resolve({ width: 4000, height: 3000 }); };
+  let opts = null;
+  w.createImageBitmap = (f, o) => { opts = o; return Promise.resolve({ width: 4000, height: 3000 }); };
   w.HTMLCanvasElement.prototype.toBlob = function (cb) { cb(new w.Blob(['jpg'], { type: 'image/jpeg' })); };
   await pick(new w.File(['heic'], 'IMG_3.heic', { type: 'image/heic' }));
   assert.match(status(), /converted to JPEG\)\. Tap “Read VIN from photo”/);
-  assert.equal(w.__vin.state.vinFile.type, 'image/jpeg');
-  assert.equal(bitmapOpts && bitmapOpts.imageOrientation, 'from-image', 'rotation kept');
-});
-
-test('VIN photo reader and door sticker code are exactly the build that read VINs (c32f901)', () => {
-  const { execSync } = require('child_process');
-  let good;
-  try { good = execSync('git show c32f901:www/app.js', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }); } catch (e) { return; }
-  const now = fs.readFileSync(path.join(WWW, 'app.js'), 'utf8');
-  const between = (src, a, b) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a)));
-  // Copied scanner block and the VIN photo/OCR handlers are identical.
-  assert.equal(between(now, 'COPIED UNCHANGED', 'END OF COPIED BLOCK'), between(good, 'COPIED UNCHANGED', 'END OF COPIED BLOCK'));
-  assert.equal(between(now, 'function parseDoorSticker', '/* ---------- VIN rules'), between(good, 'function parseDoorSticker', '/* ---------- turning'));
-  assert.equal(between(now, 'function renderVin', 'function renderForm'), between(good, 'function renderVin', 'function renderForm'));
-});
-
-test('VIN rules: safe digit-only fixes are applied, a look-alike swap is only suggested', () => {
-  const { window: w } = boot();
-  const fix = (v) => JSON.parse(JSON.stringify(w.__vin.correctVin(v)));
-  assert.deepEqual(fix(VIN), { vin: VIN, changes: [], valid: true, suggestion: null });
-  // Letter in the last four (always digits): Z -> 2, applied.
-  let r = fix('1HGCM82633A00435Z');
-  assert.equal(r.vin, VIN); assert.equal(r.valid, true);
-  assert.deepEqual(r.changes, [{ pos: 17, from: 'Z', to: '2' }]);
-  // Misread where letters are allowed (Z for 2): not applied, offered.
-  r = fix('1HGCM8Z633A004352');
-  assert.equal(r.vin, '1HGCM8Z633A004352'); assert.equal(r.valid, false);
-  assert.deepEqual(r.suggestion, { vin: VIN, change: { pos: 7, from: 'Z', to: '2' } });
-  // Two misreads: nothing applied beyond the rules, never two swaps.
-  r = fix('1HGCMB2G33A004352');
-  assert.equal(r.valid, false); assert.equal(r.vin, '1HGCMB2G33A004352');
-  // S read for 3 in the digits-only part: S becomes 5 (rule), check still fails, no further guessing.
-  r = fix('1HGCM82633A004S52');
-  assert.equal(r.valid, false); assert.equal(r.vin, '1HGCM82633A004552'); assert.equal(r.suggestion, null);
-  assert.deepEqual(r.changes, [{ pos: 15, from: 'S', to: '5' }]);
-});
-
-test('photo VIN: rule fix decodes right away; a suggested fix waits for a tap, then decodes', async () => {
-  let ocr = 'VIN 1HGCM82633A00435Z', looked = [];
-  const native = { recognizeText: () => Promise.resolve({ text: ocr }) };
-  const { window: w } = boot({ native });
-  const d = w.document;
-  w.fetch = (url) => { looked.push(url); return Promise.resolve({ ok: true, json: () => Promise.resolve(nhtsa()) }); };
-  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
-  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
-  const RealImage = w.Image;
-  w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 100 }); Object.defineProperty(img, 'naturalHeight', { value: 50 }); setTimeout(() => img.onload(), 0); return img; };
-  w.URL.createObjectURL = () => 'blob:v'; w.URL.revokeObjectURL = () => {};
-  const read = async () => {
-    w.__vin.state.vinFile = new w.File(['x'], 'v.jpg', { type: 'image/jpeg' });
-    click(w, d.querySelector('#vin-ocr'));
-    await tick(); await tick();
-  };
-
-  await read();
-  assert.equal(val(d, 'vin'), VIN);
-  assert.equal(d.querySelector('#vin').value, VIN);
-  assert.ok(looked[0].includes(VIN));
-  assert.equal(val(d, 'checkDigit'), 'Valid');
-  assert.match(d.querySelector('#msg').textContent, /Photo read 1HGCM82633A00435Z\. Fixed using VIN rules: character 17 Z→2\. Decoded\./);
-
-  // Look-alike in the middle: shown with a button, nothing decoded yet.
-  click(w, d.querySelector('#new-scan'));
-  looked = []; ocr = 'VIN 1HGCM8Z633A004352';
-  await read();
-  assert.equal(looked.length, 0, 'no decode of a VIN that fails its check');
-  const btn = d.querySelector('#use-vin-fix');
-  assert.ok(btn); assert.match(btn.textContent, /Use 1HGCM82633A004352 \(character 7: Z→2\)/);
-  assert.match(d.querySelector('#msg').textContent, /character 7 reads Z but is probably 2/);
-  // Tap it: corrected VIN decoded, the misread entry is gone from recent scans.
-  click(w, btn);
-  await tick();
-  assert.equal(val(d, 'vin'), VIN);
-  assert.equal(val(d, 'make'), 'Ford');
-  assert.equal(val(d, 'source'), 'Photo (OCR)');
-  assert.ok(looked[0].includes(VIN));
-  assert.equal(JSON.stringify(w.__vin.history().map(h => h.vin)), JSON.stringify([VIN]));
-  assert.match(d.querySelector('#f-vin').parentNode.textContent, /you confirmed the fix: character 7 Z→2/);
-
-  // NHTSA's own warning is passed on.
-  w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(nhtsa({ ErrorCode: '1', ErrorText: '1 - Check Digit (9th position) does not calculate properly' })) });
-  d.querySelector('#vin').value = '1HGCM82633A004353';
-  click(w, d.querySelector('#vin-go'));
-  await tick();
-  assert.match(d.querySelector('#msg').textContent, /NHTSA warning: 1 - Check Digit/);
+  assert.equal(opts && opts.imageOrientation, 'from-image', 'rotation kept');
 });

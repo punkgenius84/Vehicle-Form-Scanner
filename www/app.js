@@ -435,7 +435,7 @@
     { title: 'VEHICLE', fields: [
       ['vin', 'VIN', 'full'], ['year', 'Year'], ['make', 'Make'], ['model', 'Model'], ['trim', 'Trim'],
       ['series', 'Series'], ['body', 'Body style'], ['vehicleType', 'Vehicle type'], ['doors', 'Doors'],
-      ['mfgDate', 'Built (month/year)'], ['mileage', 'Mileage (odometer)', 'num']] },
+      ['mfgDate', 'Built (month/year)', 'full']] },
     { title: 'WEIGHT & SIZE', fields: [
       ['gvwr', 'GVWR (lb)', 'num'], ['curb', 'Curb weight (lb)', 'num'], ['gawrFront', 'GAWR front (lb)', 'num'],
       ['gawrRear', 'GAWR rear (lb)', 'num'], ['gvwrClass', 'GVWR class (NHTSA)', 'full'], ['wheelbase', 'Wheelbase (in)', 'num'],
@@ -554,152 +554,6 @@
     return out;
   }
 
-  /* ---------- odometer photo ---------- */
-  // Segment-style odometer digits are often read as "0576 12" or as two separate pieces of text.
-  // The digits that sit side by side on one row are joined back into one number, then the reading
-  // with the most digits wins: gauge numbers (40, 120, 260) never have more than 3.
-  var SEG_DIGIT = { O: '0', D: '0', Q: '0', U: '0', I: '1', L: '1', '|': '1', '!': '1', S: '5', B: '8', Z: '2', G: '6', T: '7' };
-  var NOT_ODO = /(TRIP|RANGE|DTE|TO EMPTY|AVG|AVERAGE|OUTSIDE|TEMP|ECO|MPG|L\/100)/;
-
-  function digitize(tok) {   // "O576I2" -> "057612"; plain words are refused
-    var up = String(tok).toUpperCase(), real = (up.match(/\d/g) || []).length, out = '';
-    if (!real || real < Math.ceil(up.length / 2)) return '';
-    for (var i = 0; i < up.length; i++) {
-      var c = up.charAt(i);
-      if (/\d/.test(c)) out += c; else if (SEG_DIGIT[c]) out += SEG_DIGIT[c]; else return '';
-    }
-    return out;
-  }
-
-  // Digit groups in one line of text, with the character positions they span.
-  function digitGroups(text) {
-    var out = [], re = /[0-9ODQUILSBZGT|!]+/gi, m;
-    text = String(text || '').replace(/(\d{1,3}),(?=\d{3}\b)/g, '$1');   // 87,215 -> 87215
-    while ((m = re.exec(text))) {
-      var before = text.charAt(m.index - 1), after = text.charAt(m.index + m[0].length);
-      if (/[.:]/.test(after) && /\d/.test(text.charAt(m.index + m[0].length + 1))) continue;   // 245.7, 10:42
-      if (/[.:]/.test(before) && /\d/.test(text.charAt(m.index - 2))) continue;
-      if (/[A-Z]/i.test(before) || (/[A-Z]/i.test(after) && !/^\s*$/.test(after))) {
-        if (!/^[0-9]+$/.test(m[0])) continue;   // letters glued to a word, not a number
-      }
-      var d = digitize(m[0]);
-      if (d) out.push({ digits: d, start: m.index, end: m.index + m[0].length, text: text });
-    }
-    return out;
-  }
-
-  // Gauge labels (10-990 in steps of 10) are never joined together. Single digits are: drum odometers
-  // put every digit in its own box ("0 9 9 4 8 3").
-  function gaugeLike(d) { return d.length >= 2 && d.length <= 3 && /0$/.test(d); }
-
-  function odometerUnit(context, flat) {
-    if (/^\s*(KM|KILOMET)(?!\s*\/\s*H)/.test(context)) return 'km';
-    if (/^\s*(MI|MILES)\b/.test(context)) return 'mi';
-    var kmOnly = /\bKM\b(?!\s*\/\s*H)/.test(flat) && !/\b(MI|MILES|MPH)\b/.test(flat);
-    return kmOnly ? 'km' : 'mi';
-  }
-
-  function odometerResult(digits, unit) {
-    var n = parseInt(digits, 10);
-    if (!(n >= 1 && n <= 1999999)) return {};
-    if (unit === 'km') {
-      return { mileage: String(Math.round(n * 0.621371)),
-        _hint: 'From odometer photo: ' + n.toLocaleString('en-US') + ' km converted to miles' };
-    }
-    return { mileage: String(n) };
-  }
-
-  // Native OCR gives each line's box on the photo: join digit pieces that sit side by side on one row.
-  function odometerFromLines(lines) {
-    var frags = [];
-    (lines || []).forEach(function (l) {
-      if (!l || l.left == null || l.right == null || l.top == null || l.bottom == null) return;
-      var text = String(l.text || ''), w = l.right - l.left, h = l.bottom - l.top;
-      if (!(w > 0 && h > 0) || NOT_ODO.test(text.toUpperCase())) return;
-      digitGroups(text).forEach(function (g) {
-        var len = Math.max(1, text.length);
-        frags.push({ digits: g.digits, x0: l.left + w * g.start / len, x1: l.left + w * g.end / len,
-          cy: (l.top + l.bottom) / 2, h: h });
-      });
-    });
-    frags.sort(function (a, b) { return a.x0 - b.x0; });
-    var used = [], chains = [];
-    frags.forEach(function (f, i) {
-      if (used[i]) return;
-      var chain = { digits: f.digits, pieces: [f.digits], last: f, h: f.h };
-      used[i] = true;
-      for (var j = i + 1; j < frags.length; j++) {
-        if (used[j]) continue;
-        var g = frags[j], h = Math.max(chain.last.h, g.h), gap = g.x0 - chain.last.x1;
-        var sameRow = Math.abs(g.cy - chain.last.cy) < 0.3 * h;
-        var sameSize = Math.max(g.h, chain.last.h) / Math.min(g.h, chain.last.h) < 1.35;
-        if (sameRow && sameSize && gap > -0.3 * h && gap < 1.0 * h &&
-            !(gaugeLike(chain.last.digits) && gaugeLike(g.digits))) {
-          chain.digits += g.digits; chain.pieces.push(g.digits); chain.last = g; used[j] = true;
-        }
-      }
-      chains.push(chain);
-    });
-    var best = null;
-    chains.forEach(function (c) {
-      if (c.digits.length < 4 || c.digits.length > 7) return;
-      if (!best || c.digits.length > best.digits.length ||
-          (c.digits.length === best.digits.length && c.h > best.h)) best = c;
-    });
-    return best ? best.digits : '';
-  }
-
-  // Text only (browser OCR, or no boxes): join "0576 12" on one line, then take the longest number.
-  function odometerFromText(text) {
-    var labelled = null, best = null, short = null;
-    var rows = String(text || '').replace(/\\n/g, '\n').split(/\r?\n/), merged = [];
-    // "0576" then "12" on the next line, nothing else on either: one odometer split in two.
-    for (var r = 0; r < rows.length; r++) {
-      var a = rows[r].trim(), b = (rows[r + 1] || '').trim();
-      var da = /^[0-9ODQUILSBZGT]{3,5}$/i.test(a) ? digitize(a) : '', db = /^[0-9ODQUILSBZGT]{1,3}$/i.test(b) ? digitize(b) : '';
-      if (da && db && (da + db).length >= 5 && (da + db).length <= 7 && !(gaugeLike(da) && gaugeLike(db))) {
-        merged.push(a + ' ' + b); r++;
-      } else merged.push(rows[r]);
-    }
-    merged.forEach(function (line) {
-      var up = line.toUpperCase();
-      var groups = digitGroups(line);
-      // join neighbours separated only by spaces into one reading
-      var joined = [];
-      groups.forEach(function (g) {
-        var prev = joined[joined.length - 1];
-        if (prev && /^\s{1,3}$/.test(line.slice(prev.end, g.start)) &&
-            !(gaugeLike(prev.digits) && gaugeLike(g.digits)) && (prev.digits + g.digits).length <= 7) {
-          prev.digits += g.digits; prev.end = g.end; prev.pieces++;
-        } else joined.push({ digits: g.digits, start: g.start, end: g.end, pieces: 1 });
-      });
-      joined.forEach(function (g) {
-        var before = up.slice(Math.max(0, g.start - 16), g.start), after = up.slice(g.end, g.end + 8);
-        if (NOT_ODO.test(before) || /^\s*(°|DEG|%|MPH|MPG|KM\s*\/\s*H|RPM|PSI|AM\b|PM\b|[FC]\b)/.test(after)) return;
-        var c = { digits: g.digits, after: after };
-        if (/(ODO|ODOMETER|TOTAL)\W*$/.test(before) && (!labelled || c.digits.length > labelled.digits.length)) labelled = c;
-        if (c.digits.length >= 4 && c.digits.length <= 7 &&
-            (!best || c.digits.length > best.digits.length ||
-             (c.digits.length === best.digits.length && parseInt(c.digits, 10) > parseInt(best.digits, 10)))) best = c;
-        if (c.digits.length < 4 && /^\s*(MI|MILES|KM)\b/.test(after) && !short) short = c;   // a low-mileage car
-      });
-    });
-    return labelled || best || short;
-  }
-
-  function parseOdometer(raw, lines) {
-    var flat = String(raw || '').replace(/\\n/g, '\n').toUpperCase().replace(/\s+/g, ' ');
-    var fromText = odometerFromText(raw);
-    if (fromText && /ODO|ODOMETER|TOTAL/.test(flat) && fromText.digits.length >= 4) {
-      return odometerResult(fromText.digits, odometerUnit(fromText.after, flat));   // explicitly labelled
-    }
-    var fromBoxes = odometerFromLines(lines);
-    if (fromBoxes && (!fromText || fromBoxes.length >= fromText.digits.length)) {
-      return odometerResult(fromBoxes, odometerUnit('', flat));
-    }
-    return fromText ? odometerResult(fromText.digits, odometerUnit(fromText.after, flat)) : {};
-  }
-
   /* ---------- door sticker reading (from the OCR text) ---------- */
   function parseDoorSticker(raw) {
     // The browser OCR path joins its two passes with a literal "\n"; treat that as a line break too.
@@ -746,58 +600,6 @@
     return out;
   }
 
-  /* ---------- VIN rules: fix photo misreads ---------- */
-  // Every VIN: characters 14-17 are digits; the 9th (check digit) is a digit or X and is computed from the other 16.
-  // A photo reading that breaks these has a misread character; try the usual look-alikes until it checks out.
-  var LOOKALIKE = { S: '5', '5': 'S', B: '8', '8': 'B', Z: '2', '2': 'Z', G: '6', '6': 'G', D: '0', '0': 'D',
-    T: '7', '7': 'T', A: '4', '4': 'A', L: '1', '1': 'L' };
-  var TO_DIGIT = { S: '5', B: '8', Z: '2', G: '6', D: '0', T: '7', A: '4', L: '1', U: '0' };
-  function vinAllowed(ch, i) {
-    if (!/[A-HJ-NPR-Z0-9]/.test(ch)) return false;
-    if (i === 8) return /[0-9X]/.test(ch);           // check digit
-    if (i === 9) return !/[UZ0]/.test(ch);          // model year: never U, Z or 0
-    if (i >= 13) return /[0-9]/.test(ch);           // last four are always digits
-    return true;
-  }
-  function correctVin(vin) {
-    var chars = String(vin || '').split(''), changes = [];
-    if (chars.length !== 17) return { vin: vin, changes: [], valid: false, suggestion: null };
-    chars.forEach(function (c, i) {                 // letters where only digits are allowed
-      if (!vinAllowed(c, i) && TO_DIGIT[c] && vinAllowed(TO_DIGIT[c], i)) { changes.push({ pos: i + 1, from: c, to: TO_DIGIT[c] }); chars[i] = TO_DIGIT[c]; }
-    });
-    var fixed = chars.join('');
-    if (vinCheckDigitValid(fixed)) return { vin: fixed, changes: changes, valid: true, suggestion: null };
-    var swaps = [];
-    chars.forEach(function (c, i) { if (LOOKALIKE[c] && vinAllowed(LOOKALIKE[c], i)) swaps.push(i); });
-    function tryDepth(depth) {
-      var found = [];
-      function walk(start, arr, made) {
-        if (made.length === depth) {
-          var v = arr.join('');
-          if (vinCheckDigitValid(v)) found.push({ vin: v, made: made.slice() });
-          return;
-        }
-        for (var k = start; k < swaps.length; k++) {
-          var i = swaps[k], was = arr[i];
-          arr[i] = LOOKALIKE[was];
-          made.push({ pos: i + 1, from: was, to: arr[i] });
-          walk(k + 1, arr, made);
-          made.pop(); arr[i] = was;
-        }
-      }
-      walk(0, chars.slice(), []);
-      return found;
-    }
-    // Beyond the safe digit-only fixes, at most one look-alike swap is offered as a suggestion, never applied.
-    if (changes.length) return { vin: fixed, changes: changes, valid: false, suggestion: null };   // already changed one: stop
-    var hits = tryDepth(1);
-    // Offered, never applied: a lone passing swap is right for look-alike misreads but can pass by coincidence otherwise.
-    return { vin: fixed, changes: changes, valid: false, suggestion: hits.length === 1 ? { vin: hits[0].vin, change: hits[0].made[0] } : null };
-  }
-  function describeChanges(ch) {
-    return ch.map(function (c) { return 'character ' + c.pos + ' ' + c.from + '→' + c.to; }).join(', ');
-  }
-
   /* ---------- turning a scanned VIN into a filled form ---------- */
   function startRecord(vin, source) {
     var prior = findHistory(vin);
@@ -827,26 +629,7 @@
     if (!newVin && !newOcr) return;
     var sticker = newOcr ? parseDoorSticker(state.ocrRaw) : {};
     if (newOcr) handledOcr = state.ocrRaw;
-    var vinNote = '', suggestion = null;
-    if (newVin && pendingSource === 'Photo (OCR)') {
-      var fix = correctVin(vin);
-      if (fix.vin !== vin) {
-        vinNote = 'Photo read ' + vin + '. Fixed using VIN rules: ' + describeChanges(fix.changes) + '.';
-        vin = fix.vin; state.vinText = vin;
-        var box = $('#vin'); if (box) box.value = vin;
-      }
-      if (!fix.valid) {
-        suggestion = fix.suggestion;
-        vinNote = (vinNote ? vinNote + ' ' : '') + (suggestion
-          ? 'The check digit doesn’t match: character ' + suggestion.change.pos + ' reads ' + suggestion.change.from +
-            ' but is probably ' + suggestion.change.to + '. Check the vehicle and tap the fix below, or correct the VIN box and tap Decode VIN.'
-          : 'The check digit doesn’t match, so at least one character is misread. Compare it with the vehicle, fix it in the VIN box and tap Decode VIN.');
-      }
-    }
-    if (newVin) {
-      handledVin = vin; startRecord(vin, pendingSource || 'Manual entry');
-      if (vinNote) current.hints.vin = vinNote;
-    }
+    if (newVin) { handledVin = vin; startRecord(vin, pendingSource || 'Manual entry'); }
     // A sticker photo where no VIN could be read is added to the vehicle on screen, flagged so it gets checked.
     var noVinInPhoto = newOcr && !newVin && !extractVinCandidates(state.ocrRaw).length;
     var stickerCount = applySticker(sticker, noVinInPhoto ? 'From door sticker photo - no VIN read in photo, confirm same vehicle' : '');
@@ -858,38 +641,10 @@
     saveRecord(current);
     renderForm();
     renderHistory();
-    if (newVin && suggestion) return showVinFix(vinNote, suggestion);   // decode after the person picks
-    if (newVin) decodeVinFields(vin, vinNote);
+    if (newVin) decodeVinFields(vin);
   }
 
-  function showVinFix(note, sug) {
-    setMsg(note, true);
-    var m = $('#msg');
-    if (!m) return;
-    var b = document.createElement('button');
-    b.type = 'button'; b.className = 'btn block'; b.id = 'use-vin-fix'; b.setAttribute('data-vin', sug.vin);
-    b.setAttribute('data-change', 'character ' + sug.change.pos + ' ' + sug.change.from + '→' + sug.change.to);
-    b.textContent = 'Use ' + sug.vin + ' (character ' + sug.change.pos + ': ' + sug.change.from + '→' + sug.change.to + ')';
-    m.appendChild(b);
-  }
-
-  // The person confirmed the suggested fix: re-file what was read under the corrected VIN, then decode.
-  function useVinFix(newVin, what) {
-    var oldVin = current.fields.vin, carry = clone(current);
-    history = history.filter(function (h) { return h.vin !== oldVin; }); storeHistory();
-    delete carry.fields.vin; delete carry.fields.checkDigit; delete carry.hints.vin;
-    current = carry;
-    pendingSource = carry.fields.source || 'Photo (OCR)';
-    state.vinText = newVin; handledVin = '';
-    var box = $('#vin'); if (box) box.value = newVin;
-    var src = pendingSource; pendingSource = '';             // already corrected: skip the photo rules this time
-    handledVin = newVin; startRecord(newVin, src);
-    current.hints.vin = 'Photo read ' + oldVin + '; you confirmed the fix: ' + what + '.';
-    saveRecord(current); renderForm(); renderHistory();
-    decodeVinFields(newVin, 'Fixed ' + what + '.');
-  }
-
-  function decodeVinFields(vin, note) {
+  function decodeVinFields(vin) {
     setMsg('Looking up ' + vin + ' with NHTSA…');
     var ctl = ('AbortController' in window) ? new AbortController() : null;
     var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 10000);
@@ -910,9 +665,7 @@
         if (keep.fields.vin !== vin) { current = keep; return renderHistory(); }
         renderHistory();
         renderForm();
-        var nhtsaWarn = String(json.Results[0].ErrorCode || '0').split(',').map(function (c) { return c.trim(); })
-          .some(function (c) { return c && c !== '0'; }) ? ' NHTSA warning: ' + String(json.Results[0].ErrorText || '').split(';')[0] + '.' : '';
-        setMsg((note ? note + ' ' : '') + 'Decoded.' + nhtsaWarn + ' Specs come from NHTSA, the door sticker and typical database values - verify on the vehicle.', !!(nhtsaWarn || (note && /misread|doesn’t match/.test(note))));
+        setMsg('Decoded. Specs come from NHTSA, the door sticker and typical database values - verify on the vehicle.');
       })
       .catch(function () {
         clearTimeout(timer);
@@ -962,18 +715,57 @@
     }
   }
 
-  /* ---------- photos picked from the gallery ---------- */
-  // A gallery pick can stop being readable after the picker closes (cloud and some gallery apps), and some
-  // phones save photos in formats the app's browser can't open (HEIC). So: copy it into memory right away,
-  // check it opens, and convert it to a JPEG when it doesn't. The photo readers then get a normal image.
-  function readBytes(file) {
-    return new Promise(function (resolve, reject) {
-      var r = new FileReader();
-      r.onload = function () { resolve(r.result); };
-      r.onerror = function () { reject(new Error('That photo could not be read. Pick it again, or use the camera.')); };
-      r.readAsArrayBuffer(file);
+  /* ---------- tire label photo ---------- */
+  var tire = { file: null, previewUrl: '', raw: '' };
+  var TIRE_HELP = 'Fills front, rear and spare tire sizes and cold pressures, seating capacity and max load. Nothing else on the form is changed.';
+
+  function tireText(file, status) {
+    var nativeScanner = nativeVinScanner();
+    if (nativeScanner && nativeScanner.recognizeText) {
+      // Same Android text recognition the VIN photo uses.
+      return prepareVinImage(file).then(function (canvas) {
+        return nativeScanner.recognizeText({ imageBase64: canvas.toDataURL('image/jpeg', 0.9).split(',')[1] || '' });
+      }).then(function (r) { return r && r.text ? r.text : ''; });
+    }
+    // Browser fallback: same Tesseract engine; allow the "/" and "," a tire label needs.
+    return loadOcrEngine().then(function (Tesseract) { return getOcrWorker(Tesseract, status); })
+      .then(function (worker) {
+        return worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' })
+          .then(function () { return worker.recognize(file); });
+      }).then(function (r) { return r && r.data ? r.data.text : ''; });
+  }
+
+  function readTirePhoto() {
+    var status = $('#tire-status'), btn = $('#tire-ocr');
+    if (!tire.file) { if (status) status.textContent = 'Take a photo of the tire label first.'; return; }
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = 'Reading tire label…';
+    tireText(tire.file, status).then(function (text) {
+      tire.raw = text;
+      var found = parseTirePlacard(text), keys = Object.keys(found);
+      if (!keys.length) {
+        if (status) status.textContent = 'No tire sizes or pressures found. Retake the photo straight on, in good light, then tap Read tire label.';
+        return;
+      }
+      keys.forEach(function (k) { setField(k, found[k], 'From tire label photo'); });
+      var where = current.fields.vin ? ' Saved with ' + current.fields.vin + '.' : ' Scan or enter the VIN and they will be saved with it.';
+      if (status) status.textContent = 'Filled ' + keys.length + ' tire/loading value' + (keys.length === 1 ? '' : 's') + '. Nothing else was changed.' + where;
+      if (current.fields.vin) saveRecord(current);
+      renderForm(); renderHistory();
+    }).catch(function (err) {
+      if (status) status.textContent = (err && err.message) || 'Could not read the tire label. Try another photo.';
+    }).then(function () {
+      if (btn) btn.disabled = false;
+      var box = $('#tire-raw-box'), pre = $('#tire-raw');
+      if (box) box.hidden = !tire.raw;
+      if (pre) pre.textContent = tire.raw;
     });
   }
+
+  /* ---------- VIN photo from the gallery ---------- */
+  // A gallery photo that opens normally goes to the tow-app photo reader exactly as picked, like a camera photo.
+  // Only one that won't open (cloud-only, or a format such as HEIC) is copied and converted to a JPEG, keeping
+  // its rotation; the status says so when that happened.
   function opens(file) {
     return new Promise(function (resolve) {
       var url = URL.createObjectURL(file), img = new Image();
@@ -982,10 +774,17 @@
       img.src = url;
     });
   }
+  function readBytes(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(r.result); };
+      r.onerror = function () { reject(new Error('That photo could not be read. Pick it again, or use the camera.')); };
+      r.readAsArrayBuffer(file);
+    });
+  }
   function toJpeg(file) {
     var unsupported = new Error('This photo’s format can’t be opened on this phone (often a HEIC "high efficiency" photo). Use the camera instead, or turn off high-efficiency photos in the camera settings.');
     if (typeof createImageBitmap !== 'function') return Promise.reject(unsupported);
-    // Keep the photo's rotation: a sideways VIN does not read.
     var decode;
     try { decode = createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) { decode = createImageBitmap(file); }
     return decode.then(function (bmp) {
@@ -1004,83 +803,14 @@
     }, function () { throw unsupported; });
   }
   function loadPicked(file) {
-    // A photo that opens normally is used exactly as picked, the same as before this fix.
-    return opens(file).then(function (ok) { return ok ? file : copyOrConvert(file); });
-  }
-  function copyOrConvert(file) {
-    return readBytes(file).then(function (buf) {
-      if (!buf || !buf.byteLength) throw new Error('That photo came back empty. It may still be in the cloud: open it in your gallery so it downloads, then pick it again.');
-      var copy = new File([buf], file.name || 'photo.jpg', { type: /^image\//.test(file.type) ? file.type : 'image/jpeg' });
-      return opens(copy).then(function (ok) { return ok ? copy : toJpeg(copy); });
+    return opens(file).then(function (ok) {
+      if (ok) return file;
+      return readBytes(file).then(function (buf) {
+        if (!buf || !buf.byteLength) throw new Error('That photo came back empty. It may still be in the cloud: open it in your gallery so it downloads, then pick it again.');
+        var copy = new File([buf], file.name || 'photo.jpg', { type: /^image\//.test(file.type) ? file.type : 'image/jpeg' });
+        return opens(copy).then(function (ok2) { return ok2 ? copy : toJpeg(copy); });
+      });
     });
-  }
-
-  /* ---------- tire label + odometer photos ---------- */
-  var TIRE_HELP = 'Fills front, rear and spare tire sizes and cold pressures, seating capacity and max load. Nothing else on the form is changed.';
-  var ODO_HELP = 'Light the dash first (open the driver door or key on, engine off), then photograph the odometer. Fills Mileage only.';
-  var PHOTO = {
-    tire: { parse: parseTirePlacard, hint: 'From tire label photo', help: TIRE_HELP, button: 'Read tire label',
-      none: 'No tire sizes or pressures found. Retake the photo straight on, in good light, then tap Read tire label.',
-      done: function (keys) { return 'Filled ' + keys.length + ' tire/loading value' + (keys.length === 1 ? '' : 's') + '. Nothing else was changed.'; } },
-    odo: { parse: parseOdometer, hint: 'From odometer photo', help: ODO_HELP, button: 'Read odometer',
-      none: 'No odometer reading found. Make sure the dash is lit, get close, avoid glare, then tap Read odometer.',
-      done: function () { return 'Mileage filled: ' + Number(current.fields.mileage).toLocaleString('en-US') + '. Check it against the dash.'; } }
-  };
-  function blankPhoto() { return { file: null, previewUrl: '', raw: '' }; }
-  var photos = { tire: blankPhoto(), odo: blankPhoto() };
-
-  function photoText(file, status) {
-    var nativeScanner = nativeVinScanner();
-    if (nativeScanner && nativeScanner.recognizeText) {
-      // Same Android text recognition the VIN photo uses.
-      return prepareVinImage(file).then(function (canvas) {
-        return nativeScanner.recognizeText({ imageBase64: canvas.toDataURL('image/jpeg', 0.9).split(',')[1] || '' });
-      }).then(function (r) { return { text: r && r.text ? r.text : '', lines: r && r.lines ? r.lines : [] }; });
-    }
-    // Browser fallback: same Tesseract engine, without the VIN-only character list.
-    return loadOcrEngine().then(function (Tesseract) { return getOcrWorker(Tesseract, status); })
-      .then(function (worker) {
-        return worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' })
-          .then(function () { return worker.recognize(file); });
-      }).then(function (r) { return { text: r && r.data ? r.data.text : '', lines: [] }; });
-  }
-
-  function readPhoto(kind) {
-    var cfg = PHOTO[kind], p = photos[kind];
-    var status = $('#' + kind + '-status'), btn = $('#' + kind + '-ocr');
-    if (!p.file) { if (status) status.textContent = 'Take or choose a photo first.'; return; }
-    if (btn) btn.disabled = true;
-    if (status) status.textContent = 'Reading photo…';
-    photoText(p.file, status).then(function (res) {
-      p.raw = res.text;
-      var found = cfg.parse(res.text, res.lines), hint = found._hint || cfg.hint;
-      delete found._hint;
-      var keys = Object.keys(found);
-      if (!keys.length) { if (status) status.textContent = cfg.none; return; }
-      keys.forEach(function (k) { setField(k, found[k], hint); });
-      var where = current.fields.vin ? ' Saved with ' + current.fields.vin + '.' : ' Scan or enter the VIN and it will be saved with it.';
-      if (status) status.textContent = cfg.done(keys) + where;
-      if (current.fields.vin) saveRecord(current);
-      renderForm(); renderHistory();
-    }).catch(function (err) {
-      if (status) status.textContent = (err && err.message) || 'Could not read the photo. Try another one.';
-    }).then(function () {
-      if (btn) btn.disabled = false;
-      var box = $('#' + kind + '-raw-box'), pre = $('#' + kind + '-raw');
-      if (box) box.hidden = !p.raw;
-      if (pre) pre.textContent = p.raw;
-    });
-  }
-
-  function resetPhoto(kind) {
-    var p = photos[kind];
-    if (p.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(p.previewUrl);
-    photos[kind] = blankPhoto();
-    ['-photo', '-gallery'].forEach(function (suffix) { var i = $('#' + kind + suffix); if (i) i.value = ''; });
-    var pv = $('#' + kind + '-preview'), rb = $('#' + kind + '-raw-box'), st = $('#' + kind + '-status');
-    if (pv) { pv.removeAttribute('src'); pv.hidden = true; }
-    if (rb) rb.hidden = true;
-    if (st) st.textContent = PHOTO[kind].help;
   }
 
   /* ---------- rendering ---------- */
@@ -1143,8 +873,7 @@
     box.innerHTML = '<div class="list">' + history.map(function (h, i) {
       var f = h.fields || {};
       var name = [f.year, f.make, f.model].filter(Boolean).join(' ') || 'Not decoded yet';
-      var extra = [f.mileage ? Number(f.mileage).toLocaleString('en-US') + ' mi' : '', f.gvwr ? 'GVWR ' + f.gvwr + ' lb' : '',
-        new Date(h.savedAt).toLocaleString()].filter(Boolean).join(' · ');
+      var extra = [f.gvwr ? 'GVWR ' + f.gvwr + ' lb' : '', new Date(h.savedAt).toLocaleString()].filter(Boolean).join(' · ');
       return '<div class="hrow' + (h.vin === current.fields.vin ? ' cur' : '') + '">' +
         '<button class="item" data-load="' + i + '"><b>' + esc(name) + '</b><span class="mono">' + esc(h.vin) + '</span><span>' + esc(extra) + '</span></button>' +
         '<button class="xbtn" data-del="' + i + '" aria-label="Remove ' + esc(h.vin) + '">✕</button></div>';
@@ -1171,8 +900,7 @@
     // Same three buttons, same functions as the tow app. Only the source label for the form is noted here.
     if (t.id === 'vin-barcode-start') { pendingSource = 'Barcode scan'; return startBarcodeScan(); }
     if (t.id === 'vin-ocr') { pendingSource = 'Photo (OCR)'; return scanVinPhoto(); }
-    if (t.id === 'tire-ocr' || t.id === 'odo-ocr') return readPhoto(t.id.split('-')[0]);
-    if (t.id === 'use-vin-fix') return useVinFix(t.getAttribute('data-vin'), t.getAttribute('data-change'));
+    if (t.id === 'tire-ocr') return readTirePhoto();
     if (t.id === 'vin-go') {
       var vin = ($('#vin').value || '').trim().toUpperCase();
       state.vinText = vin;
@@ -1195,7 +923,13 @@
       if (photo) photo.value = '';
       if (gallery) gallery.value = '';
       if (preview) { preview.removeAttribute('src'); preview.hidden = true; }
-      resetPhoto('tire'); resetPhoto('odo');
+      if (tire.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(tire.previewUrl);
+      tire = { file: null, previewUrl: '', raw: '' };
+      var tp = $('#tire-photo'), tpv = $('#tire-preview'), trb = $('#tire-raw-box'), ts = $('#tire-status');
+      if (tp) tp.value = '';
+      if (tpv) { tpv.removeAttribute('src'); tpv.hidden = true; }
+      if (trb) trb.hidden = true;
+      if (ts) ts.textContent = TIRE_HELP;
       setMsg(''); renderVin(); renderForm(); renderHistory(); window.scrollTo(0, 0);
       return;
     }
@@ -1231,28 +965,18 @@
     }
   });
 
-  // Tire label and odometer: camera or gallery photo, read when the button is tapped.
   document.addEventListener('change', function (e) {
-    var m = e.target && /^(tire|odo)-(photo|gallery)$/.exec(e.target.id || '');
-    if (!m) return;
-    var kind = m[1], picked = e.target.files && e.target.files[0], status = $('#' + kind + '-status');
-    photos[kind].file = null;
-    if (!picked) return;
-    if (status) status.textContent = 'Loading photo…';
-    (m[2] === 'gallery' ? loadPicked(picked) : Promise.resolve(picked)).then(function (file) {
-      var p = photos[kind];
-      p.file = file;
-      if (p.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(p.previewUrl);
-      p.previewUrl = window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
-      var preview = $('#' + kind + '-preview');
-      if (preview) { preview.src = p.previewUrl; preview.hidden = !p.previewUrl; }
-      if (status) status.textContent = (file.converted ? 'Photo ready (converted to JPEG). ' : 'Photo ready. ') + 'Tap “' + PHOTO[kind].button + '”.';
-    }).catch(function (err) {
-      if (status) status.textContent = err.message;
-    });
+    if (!e.target || e.target.id !== 'tire-photo') return;
+    var file = e.target.files && e.target.files[0];
+    tire.file = file || null;
+    if (tire.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(tire.previewUrl);
+    tire.previewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+    var preview = $('#tire-preview'), status = $('#tire-status');
+    if (preview) { preview.src = tire.previewUrl; preview.hidden = !tire.previewUrl; }
+    if (status && file) status.textContent = 'Photo ready. Tap “Read tire label”.';
   });
 
-  // VIN photo from the gallery: hands the picked file to the tow app's photo reader exactly like a camera photo.
+  // Gallery button for Read VIN from photo: sets the same photo the camera input would, then waits for the button.
   document.addEventListener('change', function (e) {
     if (!e.target || e.target.id !== 'vin-gallery') return;
     var picked = e.target.files && e.target.files[0], status = $('#vin-ocr-status');
@@ -1307,7 +1031,7 @@
   // exposed for tests
   window.__vin = {
     state: state, current: function () { return current; }, history: function () { return history; },
-    renderVin: renderVin, parseDoorSticker: parseDoorSticker, parseTirePlacard: parseTirePlacard, parseOdometer: parseOdometer, correctVin: correctVin, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
+    renderVin: renderVin, parseDoorSticker: parseDoorSticker, parseTirePlacard: parseTirePlacard, fillFromNhtsa: function (r) { fillFromNhtsa(r, E.parseVinDecode({ Results: [r] })); },
     extractBarcodeVin: extractBarcodeVin, extractVinCandidates: extractVinCandidates,
     nativeScannerAvailable: function () { var n = nativeVinScanner(); return !!(n && (n.scanBarcode || n.recognizeText)); }
   };
