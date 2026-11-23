@@ -575,13 +575,48 @@
     }
     // Labels are often bilingual ("GVWR/PNBV", "GAWR FRT/PNBE AV"); swallow the French half too.
     var gvwr = weightAfter(/\b(GVWR|GVW|PNBV)\b(\s*\/?\s*PNBV\b)?/, 2000, 40000);
-    var front = weightAfter(/\bGAWR\s*(FRT|FR|FRONT|F)\b(\s*\/?\s*PNBE(\s*AV)?\b)?/, 1000, 25000);
-    var rear = weightAfter(/\bGAWR\s*(RR|REAR|R)\b(\s*\/?\s*PNBE(\s*AR)?\b)?/, 1000, 25000);
+    // "GAWR FRT/PNBE AV" and Mazda's "GAWR/PNBE FRT" both name the front axle.
+    var FRONT_H = /\bGAWR\s*(\/\s*PNBE\s*)?(FRT|FR|FRONT|F)\b(\s*\/?\s*PNBE(\s*AV)?\b)?/;
+    var REAR_H = /\bGAWR\s*(\/\s*PNBE\s*)?(RR|REAR|R)\b(\s*\/?\s*PNBE(\s*AR)?\b)?/;
+    var GVWR_H = /\b(GVWR|GVW|PNBV)\b(\s*\/?\s*PNBV\b)?/;
+    var front = weightAfter(FRONT_H, 1000, 25000);
+    var rear = weightAfter(REAR_H, 1000, 25000);
     if (gvwr) out.gvwr = gvwr;
     if (front) out.gawrFront = front;
     if (rear) out.gawrRear = rear;
+    // Headings printed side by side with the numbers in the row below (Mazda and others):
+    //   GVWR/PNBV  GAWR/PNBE FRT  GAWR/PNBE RR
+    //   4288LB     2269 LB        2030 LB
+    // The numbers are matched to the headings in the same left-to-right order, then checked: GVWR is the
+    // largest and no more than the two axle ratings added together. If that doesn't hold, nothing is guessed.
+    var heads = [['gvwr', GVWR_H.exec(flat)], ['gawrFront', FRONT_H.exec(flat)], ['gawrRear', REAR_H.exec(flat)]]
+      .filter(function (h) { return h[1]; })
+      .map(function (h) { return { key: h[0], start: h[1].index, end: h[1].index + h[1][0].length }; })
+      .sort(function (a, b) { return a.start - b.start; });
+    if (heads.length === 3 && !/\d/.test(flat.slice(heads[0].start, heads[2].end).replace(/PNB[VE]/g, ''))) {
+      var after = flat.slice(heads[2].end);
+      function numbers(re, factor) {
+        var list = [], m;
+        while ((m = re.exec(after))) list.push(Math.round(parseInt(m[1].replace(/,/g, ''), 10) * factor));
+        return list;
+      }
+      var vals = numbers(/(\d[\d,]{2,5})\s*LBS?\b/g, 1);
+      if (vals.length < 3) vals = numbers(/(\d[\d,]{2,5})\s*KG\b/g, 2.20462);
+      if (vals.length >= 3) {
+        var byHead = {};
+        heads.forEach(function (h, i) { byHead[h.key] = vals[i]; });
+        var g = byHead.gvwr, fr = byHead.gawrFront, rr = byHead.gawrRear;
+        var sane = g >= 2000 && g <= 40000 && fr >= 1000 && rr >= 1000 && g >= Math.max(fr, rr) && g <= (fr + rr) * 1.05;
+        if (sane) { out.gvwr = g; out.gawrFront = fr; out.gawrRear = rr; }
+      }
+    }
     var date = /\b(MFD|MFG|DATE|MANUFACTURED)\b\D{0,25}?\b(0?[1-9]|1[0-2])\s*[\/\-.]?\s*(20\d{2}|\d{2})\b/.exec(flat);
     if (date) out.mfgDate = ('0' + date[2]).slice(-2) + '/' + (date[3].length === 2 ? '20' + date[3] : date[3]);
+    else if (/\b(DATE|MFD|MFG)\b/.test(flat)) {
+      // "DATE" heading in one row, "09/13" below it: a month/year written with a slash.
+      var my = /(?:^|[^\d\/])(0[1-9]|1[0-2])\/(\d{2})(?![\d\/])/.exec(flat);
+      if (my) out.mfgDate = my[1] + '/20' + my[2];
+    }
     // Door stickers list tires on the axle lines: "GAWR FRT ... WITH P225/45R19 TIRES ... AT 250 KPA COLD"
     function axle(re) {
       var m = re.exec(flat);

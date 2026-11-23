@@ -360,12 +360,16 @@ test('old saved scans with a single tire size/pressure still load', () => {
   assert.equal(val(w.document, 'psiFront'), '36');
 });
 
-test('main is the working build (a895c81) with additions only (gallery button, sideways retry)', () => {
+test('main is the working build (a895c81) with additions only (gallery, sideways retry, sticker columns)', () => {
   const { execSync } = require('child_process');
   let diff;
   try { diff = execSync('git diff a895c81 -- www/app.js www/index.html', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }); } catch (e) { return; }
   const removed = diff.split('\n').filter(l => /^-[^-]/.test(l));
-  assert.deepEqual(removed, ["-      var photo = $('#vin-photo'), preview = $('#vin-preview');"], 'nothing else from the working build changed');
+  assert.deepEqual(removed, [
+    "-    var front = weightAfter(/\\bGAWR\\s*(FRT|FR|FRONT|F)\\b(\\s*\\/?\\s*PNBE(\\s*AV)?\\b)?/, 1000, 25000);",
+    "-    var rear = weightAfter(/\\bGAWR\\s*(RR|REAR|R)\\b(\\s*\\/?\\s*PNBE(\\s*AR)?\\b)?/, 1000, 25000);",
+    "-      var photo = $('#vin-photo'), preview = $('#vin-preview');"
+  ], 'nothing else from the working build changed (axle headings widened for GAWR/PNBE FRT)');
 });
 
 test('VIN gallery photo: used as picked when it opens, waits for Read VIN from photo, reads like a camera photo', async () => {
@@ -492,6 +496,11 @@ test('door sticker photo read sideways: second read turned finds the VIN that pa
   assert.equal(d.querySelector('#vin').value, MAZDA_VIN);
   assert.match(d.querySelector('#vin-ocr-status').textContent, /turned sideways; its check digit is consistent/);
   assert.equal(val(d, 'source'), 'Photo (OCR)');
+  assert.equal(val(d, 'gvwr'), '4288', 'GVWR from the sticker, not the database');
+  assert.equal(val(d, 'gawrFront'), '2269');
+  assert.equal(val(d, 'gawrRear'), '2030');
+  assert.equal(val(d, 'mfgDate'), '09/2013');
+  assert.match(d.querySelector('#f-gvwr').parentNode.textContent, /door sticker/);
 });
 
 test('windshield photo with the VIN running vertically: found on the second turn', async () => {
@@ -530,4 +539,24 @@ test('a foreign VIN without a check digit still fills in, flagged to verify', as
   assert.equal(calls(), 3);
   assert.equal(val(d, 'vin'), 'WVWZZZ1KZ6W000123');
   assert.match(d.querySelector('#vin-ocr-status').textContent, /check digit doesn’t match/);
+});
+
+test('Mazda door sticker: headings side by side, numbers in the row below, in any reading order', () => {
+  const { window: w } = boot();
+  const p = (t) => JSON.parse(JSON.stringify(w.__vin.parseDoorSticker(t)));
+  const want = { gvwr: '4288', gawrFront: '2269', gawrRear: '2030', mfgDate: '09/2013' };
+  const pick = (o) => ({ gvwr: o.gvwr, gawrFront: o.gawrFront, gawrRear: o.gawrRear, mfgDate: o.mfgDate });
+  // Row by row, as printed.
+  assert.deepEqual(pick(p('MFD. BY MAZDA MOTOR CORPORATION\nDATE GVWR/PNBV GAWR/PNBE FRT GAWR/PNBE RR\n09/13 4288LB 2269 LB 2030 LB\n' +
+    '1945KG 1029 KG 921 KG\nTHIS VEHICLE CONFORMS TO ALL APPLICABLE FEDERAL MOTOR VEHICLE SAFETY\nJM1GJ1W63E1142292 TYPE: PASS CAR')), want);
+  // Column by column (heading, then its numbers).
+  assert.deepEqual(pick(p('DATE\n09/13\nGVWR/PNBV\n4288LB\n1945KG\nGAWR/PNBE FRT\n2269 LB\n1029 KG\nGAWR/PNBE RR\n2030 LB\n921 KG')), want);
+  // All headings first, then the pounds, then the kilograms.
+  assert.deepEqual(pick(p('MFD. BY MAZDA MOTOR CORPORATION\nDATE\nGVWR/PNBV\nGAWR/PNBE FRT\nGAWR/PNBE RR\n09/13\n4288LB\n2269 LB\n2030 LB\n1945KG\n1029 KG\n921 KG')), want);
+  // Kilograms only.
+  const kg = p('GVWR/PNBV GAWR/PNBE FRT GAWR/PNBE RR\n1945 KG 1029 KG 921 KG');
+  assert.deepEqual([kg.gvwr, kg.gawrFront, kg.gawrRear], ['4288', '2269', '2030']);
+  // Numbers that don't add up are not guessed.
+  const bad = p('GVWR/PNBV GAWR/PNBE FRT GAWR/PNBE RR\n2269 LB 4288 LB 2030 LB');
+  assert.equal(bad.gvwr, undefined);
 });
