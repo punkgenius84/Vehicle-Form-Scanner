@@ -555,33 +555,149 @@
   }
 
   /* ---------- odometer photo ---------- */
-  // Picks the odometer reading out of whatever else the dash shows (trip, range, time, temperature, mpg).
-  function parseOdometer(raw) {
-    var flat = String(raw || '').replace(/\\n/g, '\n').toUpperCase().replace(/\s+/g, ' ');
-    var re = /\d[\d,]*(?:\.\d+)?/g, m, best = null, labelled = null;
-    while ((m = re.exec(flat))) {
-      var tok = m[0], start = m.index, end = start + tok.length;
-      if (/\./.test(tok)) continue;                                    // trip meters and averages have decimals
-      var before = flat.slice(Math.max(0, start - 16), start), after = flat.slice(end, end + 8);
-      if (/[:]\s*$/.test(before) || /^\s*:/.test(after)) continue;       // clock
-      if (/^\s*(°|DEG|%|MPH|MPG|KM\/H|L\/100|RPM|PSI|AM\b|PM\b|[FC]\b)/.test(after)) continue;
-      if (/(TRIP|RANGE|DTE|TO EMPTY|AVG|AVERAGE|OUTSIDE|TEMP|ECO)\W*\w*\W*$/.test(before)) continue;
-      if (/,/.test(tok) && !/^\d{1,3}(,\d{3})+$/.test(tok)) continue;     // commas only as thousands
-      var n = parseInt(tok.replace(/,/g, ''), 10);
-      if (!(n >= 1 && n <= 1999999)) continue;
-      var unit = /^\s*(KM|KILOMET)/.test(after) ? 'km' : (/^\s*(MI|MILES)\b/.test(after) ? 'mi' : '');
-      var c = { n: n, unit: unit };
-      if (/(ODO|ODOMETER|TOTAL)\W*$/.test(before) && (!labelled || n > labelled.n)) labelled = c;
-      if (!best || n > best.n) best = c;
+  // Segment-style odometer digits are often read as "0576 12" or as two separate pieces of text.
+  // The digits that sit side by side on one row are joined back into one number, then the reading
+  // with the most digits wins: gauge numbers (40, 120, 260) never have more than 3.
+  var SEG_DIGIT = { O: '0', D: '0', Q: '0', U: '0', I: '1', L: '1', '|': '1', '!': '1', S: '5', B: '8', Z: '2', G: '6', T: '7' };
+  var NOT_ODO = /(TRIP|RANGE|DTE|TO EMPTY|AVG|AVERAGE|OUTSIDE|TEMP|ECO|MPG|L\/100)/;
+
+  function digitize(tok) {   // "O576I2" -> "057612"; plain words are refused
+    var up = String(tok).toUpperCase(), real = (up.match(/\d/g) || []).length, out = '';
+    if (!real || real < Math.ceil(up.length / 2)) return '';
+    for (var i = 0; i < up.length; i++) {
+      var c = up.charAt(i);
+      if (/\d/.test(c)) out += c; else if (SEG_DIGIT[c]) out += SEG_DIGIT[c]; else return '';
     }
-    var pick = labelled || best;
-    if (!pick) return {};
-    var unit = pick.unit || (/\bKM\b/.test(flat) && !/\bMI(LES)?\b/.test(flat) ? 'km' : 'mi');
+    return out;
+  }
+
+  // Digit groups in one line of text, with the character positions they span.
+  function digitGroups(text) {
+    var out = [], re = /[0-9ODQUILSBZGT|!]+/gi, m;
+    text = String(text || '').replace(/(\d{1,3}),(?=\d{3}\b)/g, '$1');   // 87,215 -> 87215
+    while ((m = re.exec(text))) {
+      var before = text.charAt(m.index - 1), after = text.charAt(m.index + m[0].length);
+      if (/[.:]/.test(after) && /\d/.test(text.charAt(m.index + m[0].length + 1))) continue;   // 245.7, 10:42
+      if (/[.:]/.test(before) && /\d/.test(text.charAt(m.index - 2))) continue;
+      if (/[A-Z]/i.test(before) || (/[A-Z]/i.test(after) && !/^\s*$/.test(after))) {
+        if (!/^[0-9]+$/.test(m[0])) continue;   // letters glued to a word, not a number
+      }
+      var d = digitize(m[0]);
+      if (d) out.push({ digits: d, start: m.index, end: m.index + m[0].length, text: text });
+    }
+    return out;
+  }
+
+  // Gauge labels (multiples of 10, at most 3 digits) are never joined together.
+  function gaugeLike(d) { return d.length <= 3 && /0$/.test(d); }
+
+  function odometerUnit(context, flat) {
+    if (/^\s*(KM|KILOMET)(?!\s*\/\s*H)/.test(context)) return 'km';
+    if (/^\s*(MI|MILES)\b/.test(context)) return 'mi';
+    var kmOnly = /\bKM\b(?!\s*\/\s*H)/.test(flat) && !/\b(MI|MILES|MPH)\b/.test(flat);
+    return kmOnly ? 'km' : 'mi';
+  }
+
+  function odometerResult(digits, unit) {
+    var n = parseInt(digits, 10);
+    if (!(n >= 1 && n <= 1999999)) return {};
     if (unit === 'km') {
-      return { mileage: String(Math.round(pick.n * 0.621371)),
-        _hint: 'From odometer photo: ' + pick.n.toLocaleString('en-US') + ' km converted to miles' };
+      return { mileage: String(Math.round(n * 0.621371)),
+        _hint: 'From odometer photo: ' + n.toLocaleString('en-US') + ' km converted to miles' };
     }
-    return { mileage: String(pick.n) };
+    return { mileage: String(n) };
+  }
+
+  // Native OCR gives each line's box on the photo: join digit pieces that sit side by side on one row.
+  function odometerFromLines(lines) {
+    var frags = [];
+    (lines || []).forEach(function (l) {
+      if (!l || l.left == null || l.right == null || l.top == null || l.bottom == null) return;
+      var text = String(l.text || ''), w = l.right - l.left, h = l.bottom - l.top;
+      if (!(w > 0 && h > 0) || NOT_ODO.test(text.toUpperCase())) return;
+      digitGroups(text).forEach(function (g) {
+        var len = Math.max(1, text.length);
+        frags.push({ digits: g.digits, x0: l.left + w * g.start / len, x1: l.left + w * g.end / len,
+          cy: (l.top + l.bottom) / 2, h: h });
+      });
+    });
+    frags.sort(function (a, b) { return a.x0 - b.x0; });
+    var used = [], chains = [];
+    frags.forEach(function (f, i) {
+      if (used[i]) return;
+      var chain = { digits: f.digits, pieces: [f.digits], last: f, h: f.h };
+      used[i] = true;
+      for (var j = i + 1; j < frags.length; j++) {
+        if (used[j]) continue;
+        var g = frags[j], h = Math.max(chain.last.h, g.h), gap = g.x0 - chain.last.x1;
+        var sameRow = Math.abs(g.cy - chain.last.cy) < 0.3 * h;
+        var sameSize = Math.max(g.h, chain.last.h) / Math.min(g.h, chain.last.h) < 1.35;
+        if (sameRow && sameSize && gap > -0.3 * h && gap < 1.0 * h &&
+            !(gaugeLike(chain.last.digits) && gaugeLike(g.digits))) {
+          chain.digits += g.digits; chain.pieces.push(g.digits); chain.last = g; used[j] = true;
+        }
+      }
+      chains.push(chain);
+    });
+    var best = null;
+    chains.forEach(function (c) {
+      if (c.digits.length < 4 || c.digits.length > 7) return;
+      if (!best || c.digits.length > best.digits.length ||
+          (c.digits.length === best.digits.length && c.h > best.h)) best = c;
+    });
+    return best ? best.digits : '';
+  }
+
+  // Text only (browser OCR, or no boxes): join "0576 12" on one line, then take the longest number.
+  function odometerFromText(text) {
+    var labelled = null, best = null, short = null;
+    var rows = String(text || '').replace(/\\n/g, '\n').split(/\r?\n/), merged = [];
+    // "0576" then "12" on the next line, nothing else on either: one odometer split in two.
+    for (var r = 0; r < rows.length; r++) {
+      var a = rows[r].trim(), b = (rows[r + 1] || '').trim();
+      var da = /^[0-9ODQUILSBZGT]{3,5}$/i.test(a) ? digitize(a) : '', db = /^[0-9ODQUILSBZGT]{1,3}$/i.test(b) ? digitize(b) : '';
+      if (da && db && (da + db).length >= 5 && (da + db).length <= 7 && !(gaugeLike(da) && gaugeLike(db))) {
+        merged.push(a + ' ' + b); r++;
+      } else merged.push(rows[r]);
+    }
+    merged.forEach(function (line) {
+      var up = line.toUpperCase();
+      var groups = digitGroups(line);
+      // join neighbours separated only by spaces into one reading
+      var joined = [];
+      groups.forEach(function (g) {
+        var prev = joined[joined.length - 1];
+        if (prev && /^\s{1,3}$/.test(line.slice(prev.end, g.start)) && prev.pieces < 2 &&
+            !(gaugeLike(prev.digits) && gaugeLike(g.digits)) && (prev.digits + g.digits).length <= 7 &&
+            prev.digits.length >= 3) {
+          prev.digits += g.digits; prev.end = g.end; prev.pieces++;
+        } else joined.push({ digits: g.digits, start: g.start, end: g.end, pieces: 1 });
+      });
+      joined.forEach(function (g) {
+        var before = up.slice(Math.max(0, g.start - 16), g.start), after = up.slice(g.end, g.end + 8);
+        if (NOT_ODO.test(before) || /^\s*(°|DEG|%|MPH|MPG|KM\s*\/\s*H|RPM|PSI|AM\b|PM\b|[FC]\b)/.test(after)) return;
+        var c = { digits: g.digits, after: after };
+        if (/(ODO|ODOMETER|TOTAL)\W*$/.test(before) && (!labelled || c.digits.length > labelled.digits.length)) labelled = c;
+        if (c.digits.length >= 4 && c.digits.length <= 7 &&
+            (!best || c.digits.length > best.digits.length ||
+             (c.digits.length === best.digits.length && parseInt(c.digits, 10) > parseInt(best.digits, 10)))) best = c;
+        if (c.digits.length < 4 && /^\s*(MI|MILES|KM)\b/.test(after) && !short) short = c;   // a low-mileage car
+      });
+    });
+    return labelled || best || short;
+  }
+
+  function parseOdometer(raw, lines) {
+    var flat = String(raw || '').replace(/\\n/g, '\n').toUpperCase().replace(/\s+/g, ' ');
+    var fromText = odometerFromText(raw);
+    if (fromText && /ODO|ODOMETER|TOTAL/.test(flat) && fromText.digits.length >= 4) {
+      return odometerResult(fromText.digits, odometerUnit(fromText.after, flat));   // explicitly labelled
+    }
+    var fromBoxes = odometerFromLines(lines);
+    if (fromBoxes && (!fromText || fromBoxes.length >= fromText.digits.length)) {
+      return odometerResult(fromBoxes, odometerUnit('', flat));
+    }
+    return fromText ? odometerResult(fromText.digits, odometerUnit(fromText.after, flat)) : {};
   }
 
   /* ---------- door sticker reading (from the OCR text) ---------- */
@@ -765,14 +881,14 @@
       // Same Android text recognition the VIN photo uses.
       return prepareVinImage(file).then(function (canvas) {
         return nativeScanner.recognizeText({ imageBase64: canvas.toDataURL('image/jpeg', 0.9).split(',')[1] || '' });
-      }).then(function (r) { return r && r.text ? r.text : ''; });
+      }).then(function (r) { return { text: r && r.text ? r.text : '', lines: r && r.lines ? r.lines : [] }; });
     }
     // Browser fallback: same Tesseract engine, without the VIN-only character list.
     return loadOcrEngine().then(function (Tesseract) { return getOcrWorker(Tesseract, status); })
       .then(function (worker) {
         return worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '6' })
           .then(function () { return worker.recognize(file); });
-      }).then(function (r) { return r && r.data ? r.data.text : ''; });
+      }).then(function (r) { return { text: r && r.data ? r.data.text : '', lines: [] }; });
   }
 
   function readPhoto(kind) {
@@ -781,9 +897,9 @@
     if (!p.file) { if (status) status.textContent = 'Take or choose a photo first.'; return; }
     if (btn) btn.disabled = true;
     if (status) status.textContent = 'Reading photo…';
-    photoText(p.file, status).then(function (text) {
-      p.raw = text;
-      var found = cfg.parse(text), hint = found._hint || cfg.hint;
+    photoText(p.file, status).then(function (res) {
+      p.raw = res.text;
+      var found = cfg.parse(res.text, res.lines), hint = found._hint || cfg.hint;
       delete found._hint;
       var keys = Object.keys(found);
       if (!keys.length) { if (status) status.textContent = cfg.none; return; }

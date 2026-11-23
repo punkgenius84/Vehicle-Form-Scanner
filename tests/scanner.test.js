@@ -436,3 +436,40 @@ test('odometer photo fills Mileage only; gallery photos work for VIN, tire and o
   assert.equal(d.querySelector('#vin-preview').hidden, true);
   assert.match(d.querySelector('#odo-status').textContent, /Light the dash first/);
 });
+
+// Line boxes measured from a real dash photo (1600x892): GM speedo, segment odometer "0576 12",
+// gauge labels all around, "km/h" ring and "MPH".
+const DASH_LINES = [
+  { text: '40', left: 632, right: 708, top: 150, bottom: 190 }, { text: '50', left: 760, right: 835, top: 128, bottom: 168 },
+  { text: '60', left: 888, right: 962, top: 148, bottom: 188 }, { text: '30', left: 540, right: 615, top: 222, bottom: 262 },
+  { text: '80', left: 772, right: 822, top: 230, bottom: 255 }, { text: '70', left: 985, right: 1060, top: 222, bottom: 262 },
+  { text: '60', left: 670, right: 720, top: 265, bottom: 290 }, { text: '100', left: 870, right: 935, top: 265, bottom: 290 },
+  { text: 'km/h', left: 742, right: 852, top: 290, bottom: 322 }, { text: '210', left: 106, right: 175, top: 252, bottom: 280 },
+  { text: '260', left: 212, right: 292, top: 295, bottom: 325 }, { text: '20', left: 470, right: 545, top: 325, bottom: 365 },
+  { text: '40', left: 600, right: 650, top: 328, bottom: 352 }, { text: '120', left: 935, right: 995, top: 340, bottom: 365 },
+  { text: '80', left: 1050, right: 1125, top: 330, bottom: 370 }, { text: 'TEMP', left: 0, right: 100, top: 450, bottom: 478 },
+  { text: '-20', left: 550, right: 618, top: 425, bottom: 450 }, { text: '140', left: 965, right: 1025, top: 430, bottom: 455 },
+  { text: '10', left: 450, right: 505, top: 460, bottom: 500 }, { text: '90', left: 1070, right: 1145, top: 450, bottom: 490 },
+  { text: '1/2', left: 1445, right: 1505, top: 248, bottom: 275 }, { text: 'FUEL', left: 1495, right: 1600, top: 450, bottom: 480 },
+  { text: '160', left: 945, right: 1005, top: 525, bottom: 553 }, { text: 'MPH', left: 735, right: 860, top: 558, bottom: 595 },
+  { text: '100', left: 1040, right: 1135, top: 565, bottom: 605 }, { text: '0576', left: 680, right: 815, top: 690, bottom: 732 },
+  { text: '12', left: 840, right: 893, top: 690, bottom: 732 }, { text: 'HOLD TO', left: 1043, right: 1158, top: 672, bottom: 698 },
+  { text: 'RESET', left: 1043, right: 1130, top: 702, bottom: 728 }, { text: '80', left: 25, right: 80, top: 670, bottom: 698 },
+  { text: '9', left: 1555, right: 1580, top: 668, bottom: 696 }
+];
+
+test('odometer from a real dash: split segment digits are joined, gauge numbers ignored, km/h is not km', () => {
+  const { window: w } = boot();
+  const p = (t, l) => JSON.parse(JSON.stringify(w.__vin.parseOdometer(t, l)));
+  const text = DASH_LINES.map(l => l.text).join('\n');
+  assert.deepEqual(p(text, DASH_LINES), { mileage: '57612' }, 'with line positions (Android)');
+  assert.deepEqual(p(text), { mileage: '57612' }, 'text only');
+  // Same reading when the OCR returns it as one line with a gap, or misreads a segment digit as a letter.
+  assert.deepEqual(p(text.replace('0576\n12', '0576 12')), { mileage: '57612' });
+  assert.deepEqual(p(text.replace('0576\n12', 'O576 I2')), { mileage: '57612' });
+  const misread = DASH_LINES.map(l => l.text === '0576' ? Object.assign({}, l, { text: 'O576' }) : l);
+  assert.deepEqual(p(text, misread), { mileage: '57612' });
+  // Gauge labels alone never become a mileage.
+  const gaugesOnly = DASH_LINES.filter(l => l.text !== '0576' && l.text !== '12');
+  assert.deepEqual(p(gaugesOnly.map(l => l.text).join('\n'), gaugesOnly), {});
+});
