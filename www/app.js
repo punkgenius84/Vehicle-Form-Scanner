@@ -884,17 +884,29 @@
   function toJpeg(file) {
     var unsupported = new Error('This photo’s format can’t be opened on this phone (often a HEIC "high efficiency" photo). Use the camera instead, or turn off high-efficiency photos in the camera settings.');
     if (typeof createImageBitmap !== 'function') return Promise.reject(unsupported);
-    return createImageBitmap(file).then(function (bmp) {
+    // Keep the photo's rotation: a sideways VIN does not read.
+    var decode;
+    try { decode = createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) { decode = createImageBitmap(file); }
+    return decode.then(function (bmp) {
       var scale = Math.min(1, 3000 / Math.max(bmp.width, bmp.height));
       var c = document.createElement('canvas');
       c.width = Math.max(1, Math.round(bmp.width * scale)); c.height = Math.max(1, Math.round(bmp.height * scale));
       c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
       return new Promise(function (resolve, reject) {
-        c.toBlob(function (b) { b ? resolve(new File([b], 'photo.jpg', { type: 'image/jpeg' })) : reject(unsupported); }, 'image/jpeg', 0.92);
+        c.toBlob(function (b) {
+          if (!b) return reject(unsupported);
+          var jpg = new File([b], 'photo.jpg', { type: 'image/jpeg' });
+          jpg.converted = true;
+          resolve(jpg);
+        }, 'image/jpeg', 0.92);
       });
     }, function () { throw unsupported; });
   }
   function loadPicked(file) {
+    // A photo that opens normally is used exactly as picked, the same as before this fix.
+    return opens(file).then(function (ok) { return ok ? file : copyOrConvert(file); });
+  }
+  function copyOrConvert(file) {
     return readBytes(file).then(function (buf) {
       if (!buf || !buf.byteLength) throw new Error('That photo came back empty. It may still be in the cloud: open it in your gallery so it downloads, then pick it again.');
       var copy = new File([buf], file.name || 'photo.jpg', { type: /^image\//.test(file.type) ? file.type : 'image/jpeg' });
@@ -1132,7 +1144,7 @@
       p.previewUrl = window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
       var preview = $('#' + kind + '-preview');
       if (preview) { preview.src = p.previewUrl; preview.hidden = !p.previewUrl; }
-      if (status) status.textContent = 'Photo ready. Tap “' + PHOTO[kind].button + '”.';
+      if (status) status.textContent = (file.converted ? 'Photo ready (converted to JPEG). ' : 'Photo ready. ') + 'Tap “' + PHOTO[kind].button + '”.';
     }).catch(function (err) {
       if (status) status.textContent = err.message;
     });
@@ -1150,7 +1162,7 @@
       state.vinFile = file;
       if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);
       state.vinPreviewUrl = window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
-      state.ocrStatus = 'Photo ready. Tap “Read VIN from photo”.';
+      state.ocrStatus = (file.converted ? 'Photo ready (converted to JPEG). ' : 'Photo ready. ') + 'Tap “Read VIN from photo”.';
       var preview = $('#vin-preview');
       if (preview) { preview.src = state.vinPreviewUrl; preview.hidden = !state.vinPreviewUrl; }
       if (status) status.textContent = state.ocrStatus;

@@ -516,7 +516,7 @@ test('drum odometer: boxed single digits join into one reading, trip and gear st
   assert.deepEqual(p('1 0 0 7 0 0'), { mileage: '100700' });
 });
 
-test('gallery photo: copied into memory at once; empty or unreadable photos get a clear message', async () => {
+test('gallery photo: used as picked when it opens; otherwise copied/converted with rotation kept, or a clear message', async () => {
   let reads = 0, got = null;
   const native = { recognizeText: (o) => { reads++; got = o; return Promise.resolve({ text: 'VIN ' + VIN }); } };
   const { window: w } = boot({ native });
@@ -543,28 +543,42 @@ test('gallery photo: copied into memory at once; empty or unreadable photos get 
   const original = new w.File(['jpegbytes'], 'IMG_1.jpg', { type: 'image/jpeg' });
   await pick(original);
   assert.match(status(), /Tap “Read VIN from photo”/);
-  assert.notEqual(w.__vin.state.vinFile, original, 'a copy, not the picker\'s handle');
-  assert.equal(w.__vin.state.vinFile.size, original.size);
+  assert.equal(w.__vin.state.vinFile, original, 'a photo that opens is used exactly as picked, like before');
   click(w, d.querySelector('#vin-ocr'));
   await tick(); await tick();
   assert.equal(reads, 1);
   assert.equal(val(d, 'vin'), VIN);
 
-  // Empty (still in the cloud).
+  // Empty (still in the cloud): it won't open, and the copy shows why.
+  decodable = false;
   await pick(new w.File([], 'cloud.jpg', { type: 'image/jpeg' }));
   assert.match(status(), /came back empty/);
   assert.equal(w.__vin.state.vinFile, null);
 
   // A format the browser can't open, and no converter: say why.
-  decodable = false;
   await pick(new w.File(['heic'], 'IMG_2.heic', { type: 'image/heic' }));
   assert.match(status(), /HEIC/);
   assert.equal(w.__vin.state.vinFile, null);
 
   // Same format, but the phone can convert it: it becomes a JPEG and is ready.
-  w.createImageBitmap = () => Promise.resolve({ width: 4000, height: 3000 });
+  let bitmapOpts = null;
+  w.createImageBitmap = (f, o) => { bitmapOpts = o; return Promise.resolve({ width: 4000, height: 3000 }); };
   w.HTMLCanvasElement.prototype.toBlob = function (cb) { cb(new w.Blob(['jpg'], { type: 'image/jpeg' })); };
   await pick(new w.File(['heic'], 'IMG_3.heic', { type: 'image/heic' }));
-  assert.match(status(), /Tap “Read VIN from photo”/);
+  assert.match(status(), /converted to JPEG\)\. Tap “Read VIN from photo”/);
   assert.equal(w.__vin.state.vinFile.type, 'image/jpeg');
+  assert.equal(bitmapOpts && bitmapOpts.imageOrientation, 'from-image', 'rotation kept');
+});
+
+test('camera VIN photo path is exactly the build that read VINs (c32f901)', () => {
+  const { execSync } = require('child_process');
+  let good;
+  try { good = execSync('git show c32f901:www/app.js', { cwd: path.join(__dirname, '..'), encoding: 'utf8' }); } catch (e) { return; }
+  const now = fs.readFileSync(path.join(WWW, 'app.js'), 'utf8');
+  const between = (src, a, b) => src.slice(src.indexOf(a), src.indexOf(b, src.indexOf(a)));
+  // Copied scanner block and the VIN photo/OCR handlers are identical.
+  assert.equal(between(now, 'COPIED UNCHANGED', 'END OF COPIED BLOCK'), between(good, 'COPIED UNCHANGED', 'END OF COPIED BLOCK'));
+  assert.equal(between(now, 'function processCapture', 'function decodeVinFields'), between(good, 'function processCapture', 'function decodeVinFields'));
+  assert.equal(between(now, 'function parseDoorSticker', '/* ---------- turning'), between(good, 'function parseDoorSticker', '/* ---------- turning'));
+  assert.equal(between(now, 'function renderVin', 'function renderForm'), between(good, 'function renderVin', 'function renderForm'));
 });
