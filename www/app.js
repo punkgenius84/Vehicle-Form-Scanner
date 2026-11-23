@@ -588,8 +588,9 @@
     return out;
   }
 
-  // Gauge labels (multiples of 10, at most 3 digits) are never joined together.
-  function gaugeLike(d) { return d.length <= 3 && /0$/.test(d); }
+  // Gauge labels (10-990 in steps of 10) are never joined together. Single digits are: drum odometers
+  // put every digit in its own box ("0 9 9 4 8 3").
+  function gaugeLike(d) { return d.length >= 2 && d.length <= 3 && /0$/.test(d); }
 
   function odometerUnit(context, flat) {
     if (/^\s*(KM|KILOMET)(?!\s*\/\s*H)/.test(context)) return 'km';
@@ -667,9 +668,8 @@
       var joined = [];
       groups.forEach(function (g) {
         var prev = joined[joined.length - 1];
-        if (prev && /^\s{1,3}$/.test(line.slice(prev.end, g.start)) && prev.pieces < 2 &&
-            !(gaugeLike(prev.digits) && gaugeLike(g.digits)) && (prev.digits + g.digits).length <= 7 &&
-            prev.digits.length >= 3) {
+        if (prev && /^\s{1,3}$/.test(line.slice(prev.end, g.start)) &&
+            !(gaugeLike(prev.digits) && gaugeLike(g.digits)) && (prev.digits + g.digits).length <= 7) {
           prev.digits += g.digits; prev.end = g.end; prev.pieces++;
         } else joined.push({ digits: g.digits, start: g.start, end: g.end, pieces: 1 });
       });

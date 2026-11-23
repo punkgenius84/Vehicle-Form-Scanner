@@ -473,3 +473,43 @@ test('odometer from a real dash: split segment digits are joined, gauge numbers 
   const gaugesOnly = DASH_LINES.filter(l => l.text !== '0576' && l.text !== '12');
   assert.deepEqual(p(gaugesOnly.map(l => l.text).join('\n'), gaugesOnly), {});
 });
+
+// Line boxes from a mechanical drum odometer photo (474x354): each digit in its own box, a trip
+// counter with a half-rolled digit below it, a P R N D 2 1 gear strip, and gauge labels.
+const DRUM_LINES = [
+  { text: '60', left: 135, right: 175, top: 45, bottom: 75 }, { text: '70', left: 180, right: 220, top: 30, bottom: 60 },
+  { text: '80', left: 225, right: 265, top: 28, bottom: 58 }, { text: '90', left: 280, right: 320, top: 35, bottom: 65 },
+  { text: '100', left: 320, right: 385, top: 70, bottom: 100 }, { text: '50', left: 100, right: 140, top: 85, bottom: 115 },
+  { text: '100', left: 175, right: 200, top: 88, bottom: 102 }, { text: '120', left: 222, right: 245, top: 75, bottom: 89 },
+  { text: '140', left: 268, right: 290, top: 80, bottom: 94 }, { text: '80', left: 140, right: 160, top: 110, bottom: 124 },
+  { text: '160', left: 310, right: 333, top: 103, bottom: 117 }, { text: '40', left: 75, right: 115, top: 118, bottom: 148 },
+  { text: '110', left: 355, right: 420, top: 110, bottom: 140 }, { text: '60', left: 115, right: 135, top: 148, bottom: 162 },
+  { text: '0 9 9 4 8 3', left: 180, right: 298, top: 138, bottom: 162 }, { text: '180', left: 335, right: 358, top: 137, bottom: 151 },
+  { text: '30', left: 60, right: 100, top: 165, bottom: 195 }, { text: '120', left: 375, right: 440, top: 155, bottom: 185 },
+  { text: '40', left: 105, right: 125, top: 195, bottom: 209 }, { text: '-200', left: 345, right: 378, top: 180, bottom: 194 },
+  { text: '20', left: 55, right: 95, top: 210, bottom: 240 }, { text: '130', left: 380, right: 445, top: 200, bottom: 230 },
+  { text: '20', left: 112, right: 132, top: 236, bottom: 250 }, { text: '-220', left: 335, right: 368, top: 222, bottom: 236 },
+  { text: '6 9 1', left: 180, right: 240, top: 222, bottom: 246 }, { text: '10', left: 55, right: 95, top: 255, bottom: 285 },
+  { text: '140', left: 370, right: 430, top: 250, bottom: 280 }, { text: 'MPH', left: 155, right: 200, top: 288, bottom: 302 },
+  { text: 'km/h', left: 275, right: 312, top: 288, bottom: 302 }, { text: 'P RNO21', left: 150, right: 335, top: 305, bottom: 330 },
+  { text: 'CERTIFIED CALIBRATION', left: 160, right: 320, top: 333, bottom: 348 }
+];
+
+test('drum odometer: boxed single digits join into one reading, trip and gear strip ignored', () => {
+  const { window: w } = boot();
+  const p = (t, l) => JSON.parse(JSON.stringify(w.__vin.parseOdometer(t, l)));
+  const text = DRUM_LINES.map(l => l.text).join('\n');
+  assert.deepEqual(p(text, DRUM_LINES), { mileage: '99483' }, 'with line positions');
+  assert.deepEqual(p(text), { mileage: '99483' }, 'text only');
+  // Other ways the reader can return the same drum.
+  for (const variant of ['099483', '09948 3', '0 99 48 3', 'O 9 9 4 8 3']) {
+    const lines = DRUM_LINES.map(l => l.text === '0 9 9 4 8 3' ? Object.assign({}, l, { text: variant }) : l);
+    assert.deepEqual(p(lines.map(l => l.text).join('\n'), lines), { mileage: '99483' }, variant);
+  }
+  // Each box as its own line (positions only).
+  const boxes = DRUM_LINES.filter(l => l.text !== '0 9 9 4 8 3').concat('099483'.split('').map((d, i) =>
+    ({ text: d, left: 182 + i * 19.5, right: 196 + i * 19.5, top: 138, bottom: 162 })));
+  assert.deepEqual(p(boxes.map(l => l.text).join('\n'), boxes), { mileage: '99483' }, 'one box per line');
+  // Zeros next to each other still join (they are not gauge labels).
+  assert.deepEqual(p('1 0 0 7 0 0'), { mileage: '100700' });
+});
