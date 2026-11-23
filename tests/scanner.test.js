@@ -319,6 +319,7 @@ test('tire label photo fills only tire fields, keeps the door sticker values, wo
     const input = d.querySelector('#tire-photo');
     Object.defineProperty(input, 'files', { value: [new w.File(['x'], 't.jpg', { type: 'image/jpeg' })], configurable: true });
     input.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await tick();
     assert.match(d.querySelector('#tire-status').textContent, /Tap “Read tire label”/, 'waits for the button');
     click(w, d.querySelector('#tire-ocr'));
     await tick(); await tick();
@@ -381,10 +382,11 @@ test('odometer photo fills Mileage only; gallery photos work for VIN, tire and o
   const RealImage = w.Image;
   w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 100 }); Object.defineProperty(img, 'naturalHeight', { value: 50 }); setTimeout(() => img.onload(), 0); return img; };
   w.URL.createObjectURL = () => 'blob:g'; w.URL.revokeObjectURL = () => {};
-  const pick = (id) => {
+  const pick = async (id) => {
     const input = d.querySelector(id);
     Object.defineProperty(input, 'files', { value: [new w.File(['x'], 'p.jpg', { type: 'image/jpeg' })], configurable: true });
     input.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await tick();
   };
 
   // Gallery inputs have no camera "capture" setting, so Android opens the photo picker.
@@ -398,7 +400,7 @@ test('odometer photo fills Mileage only; gallery photos work for VIN, tire and o
   const before = JSON.stringify(w.__vin.current().fields);
 
   // Odometer from the gallery.
-  pick('#odo-gallery');
+  await pick('#odo-gallery');
   assert.match(d.querySelector('#odo-status').textContent, /Tap “Read odometer”/);
   click(w, d.querySelector('#odo-ocr'));
   await tick(); await tick();
@@ -412,7 +414,7 @@ test('odometer photo fills Mileage only; gallery photos work for VIN, tire and o
   // VIN photo from the gallery: same reader as the camera photo, waits for the button.
   let reads = 0;
   native.recognizeText = () => { reads++; return Promise.resolve({ text: 'VIN ' + VIN }); };
-  pick('#vin-gallery');
+  await pick('#vin-gallery');
   assert.equal(reads, 0);
   assert.match(d.querySelector('#vin-ocr-status').textContent, /Tap “Read VIN from photo”/);
   assert.equal(d.querySelector('#vin-preview').hidden, false);
@@ -424,7 +426,7 @@ test('odometer photo fills Mileage only; gallery photos work for VIN, tire and o
 
   // Tire label from the gallery.
   native.recognizeText = () => Promise.resolve({ text: 'FRONT P245/60R18 35 PSI\nREAR P245/60R18 35 PSI' });
-  pick('#tire-gallery');
+  await pick('#tire-gallery');
   click(w, d.querySelector('#tire-ocr'));
   await tick(); await tick();
   assert.equal(val(d, 'psiFront'), '35');
@@ -512,4 +514,57 @@ test('drum odometer: boxed single digits join into one reading, trip and gear st
   assert.deepEqual(p(boxes.map(l => l.text).join('\n'), boxes), { mileage: '99483' }, 'one box per line');
   // Zeros next to each other still join (they are not gauge labels).
   assert.deepEqual(p('1 0 0 7 0 0'), { mileage: '100700' });
+});
+
+test('gallery photo: copied into memory at once; empty or unreadable photos get a clear message', async () => {
+  let reads = 0, got = null;
+  const native = { recognizeText: (o) => { reads++; got = o; return Promise.resolve({ text: 'VIN ' + VIN }); } };
+  const { window: w } = boot({ native });
+  const d = w.document;
+  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
+  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
+  w.URL.createObjectURL = () => 'blob:m'; w.URL.revokeObjectURL = () => {};
+  let decodable = true;
+  const RealImage = w.Image;
+  w.Image = function () {
+    const img = new RealImage();
+    Object.defineProperty(img, 'naturalWidth', { get: () => decodable ? 100 : 0 }); Object.defineProperty(img, 'naturalHeight', { value: 50 });
+    setTimeout(() => (decodable ? img.onload() : img.onerror()), 0); return img;
+  };
+  const pick = async (file) => {
+    const input = d.querySelector('#vin-gallery');
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    input.dispatchEvent(new w.Event('change', { bubbles: true }));
+    await tick(); await tick();
+  };
+  const status = () => d.querySelector('#vin-ocr-status').textContent;
+
+  // Normal JPEG: a fresh in-memory copy goes to the reader.
+  const original = new w.File(['jpegbytes'], 'IMG_1.jpg', { type: 'image/jpeg' });
+  await pick(original);
+  assert.match(status(), /Tap “Read VIN from photo”/);
+  assert.notEqual(w.__vin.state.vinFile, original, 'a copy, not the picker\'s handle');
+  assert.equal(w.__vin.state.vinFile.size, original.size);
+  click(w, d.querySelector('#vin-ocr'));
+  await tick(); await tick();
+  assert.equal(reads, 1);
+  assert.equal(val(d, 'vin'), VIN);
+
+  // Empty (still in the cloud).
+  await pick(new w.File([], 'cloud.jpg', { type: 'image/jpeg' }));
+  assert.match(status(), /came back empty/);
+  assert.equal(w.__vin.state.vinFile, null);
+
+  // A format the browser can't open, and no converter: say why.
+  decodable = false;
+  await pick(new w.File(['heic'], 'IMG_2.heic', { type: 'image/heic' }));
+  assert.match(status(), /HEIC/);
+  assert.equal(w.__vin.state.vinFile, null);
+
+  // Same format, but the phone can convert it: it becomes a JPEG and is ready.
+  w.createImageBitmap = () => Promise.resolve({ width: 4000, height: 3000 });
+  w.HTMLCanvasElement.prototype.toBlob = function (cb) { cb(new w.Blob(['jpg'], { type: 'image/jpeg' })); };
+  await pick(new w.File(['heic'], 'IMG_3.heic', { type: 'image/heic' }));
+  assert.match(status(), /Tap “Read VIN from photo”/);
+  assert.equal(w.__vin.state.vinFile.type, 'image/jpeg');
 });

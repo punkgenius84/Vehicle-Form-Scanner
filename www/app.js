@@ -861,6 +861,47 @@
     }
   }
 
+  /* ---------- photos picked from the gallery ---------- */
+  // A gallery pick can stop being readable after the picker closes (cloud and some gallery apps), and some
+  // phones save photos in formats the app's browser can't open (HEIC). So: copy it into memory right away,
+  // check it opens, and convert it to a JPEG when it doesn't. The photo readers then get a normal image.
+  function readBytes(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(r.result); };
+      r.onerror = function () { reject(new Error('That photo could not be read. Pick it again, or use the camera.')); };
+      r.readAsArrayBuffer(file);
+    });
+  }
+  function opens(file) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () { URL.revokeObjectURL(url); resolve(img.naturalWidth > 0); };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(false); };
+      img.src = url;
+    });
+  }
+  function toJpeg(file) {
+    var unsupported = new Error('This photo’s format can’t be opened on this phone (often a HEIC "high efficiency" photo). Use the camera instead, or turn off high-efficiency photos in the camera settings.');
+    if (typeof createImageBitmap !== 'function') return Promise.reject(unsupported);
+    return createImageBitmap(file).then(function (bmp) {
+      var scale = Math.min(1, 3000 / Math.max(bmp.width, bmp.height));
+      var c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(bmp.width * scale)); c.height = Math.max(1, Math.round(bmp.height * scale));
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      return new Promise(function (resolve, reject) {
+        c.toBlob(function (b) { b ? resolve(new File([b], 'photo.jpg', { type: 'image/jpeg' })) : reject(unsupported); }, 'image/jpeg', 0.92);
+      });
+    }, function () { throw unsupported; });
+  }
+  function loadPicked(file) {
+    return readBytes(file).then(function (buf) {
+      if (!buf || !buf.byteLength) throw new Error('That photo came back empty. It may still be in the cloud: open it in your gallery so it downloads, then pick it again.');
+      var copy = new File([buf], file.name || 'photo.jpg', { type: /^image\//.test(file.type) ? file.type : 'image/jpeg' });
+      return opens(copy).then(function (ok) { return ok ? copy : toJpeg(copy); });
+    });
+  }
+
   /* ---------- tire label + odometer photos ---------- */
   var TIRE_HELP = 'Fills front, rear and spare tire sizes and cold pressures, seating capacity and max load. Nothing else on the form is changed.';
   var ODO_HELP = 'Light the dash first (open the driver door or key on, engine off), then photograph the odometer. Fills Mileage only.';
@@ -1080,26 +1121,43 @@
   document.addEventListener('change', function (e) {
     var m = e.target && /^(tire|odo)-(photo|gallery)$/.exec(e.target.id || '');
     if (!m) return;
-    var kind = m[1], p = photos[kind], file = e.target.files && e.target.files[0];
-    p.file = file || null;
-    if (p.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(p.previewUrl);
-    p.previewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
-    var preview = $('#' + kind + '-preview'), status = $('#' + kind + '-status');
-    if (preview) { preview.src = p.previewUrl; preview.hidden = !p.previewUrl; }
-    if (status && file) status.textContent = 'Photo ready. Tap “' + PHOTO[kind].button + '”.';
+    var kind = m[1], picked = e.target.files && e.target.files[0], status = $('#' + kind + '-status');
+    photos[kind].file = null;
+    if (!picked) return;
+    if (status) status.textContent = 'Loading photo…';
+    (m[2] === 'gallery' ? loadPicked(picked) : Promise.resolve(picked)).then(function (file) {
+      var p = photos[kind];
+      p.file = file;
+      if (p.previewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(p.previewUrl);
+      p.previewUrl = window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+      var preview = $('#' + kind + '-preview');
+      if (preview) { preview.src = p.previewUrl; preview.hidden = !p.previewUrl; }
+      if (status) status.textContent = 'Photo ready. Tap “' + PHOTO[kind].button + '”.';
+    }).catch(function (err) {
+      if (status) status.textContent = err.message;
+    });
   });
 
   // VIN photo from the gallery: hands the picked file to the tow app's photo reader exactly like a camera photo.
   document.addEventListener('change', function (e) {
     if (!e.target || e.target.id !== 'vin-gallery') return;
-    var file = e.target.files && e.target.files[0];
-    state.vinFile = file || null;
-    if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);
-    state.vinPreviewUrl = file && window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
-    state.ocrStatus = file ? 'Photo ready. Tap “Read VIN from photo”.' : '';
-    var preview = $('#vin-preview'), status = $('#vin-ocr-status');
-    if (preview) { preview.src = state.vinPreviewUrl; preview.hidden = !state.vinPreviewUrl; }
+    var picked = e.target.files && e.target.files[0], status = $('#vin-ocr-status');
+    state.vinFile = null;
+    if (!picked) return;
+    state.ocrStatus = 'Loading photo…';
     if (status) status.textContent = state.ocrStatus;
+    loadPicked(picked).then(function (file) {
+      state.vinFile = file;
+      if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);
+      state.vinPreviewUrl = window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+      state.ocrStatus = 'Photo ready. Tap “Read VIN from photo”.';
+      var preview = $('#vin-preview');
+      if (preview) { preview.src = state.vinPreviewUrl; preview.hidden = !state.vinPreviewUrl; }
+      if (status) status.textContent = state.ocrStatus;
+    }).catch(function (err) {
+      state.ocrStatus = err.message;
+      if (status) status.textContent = state.ocrStatus;
+    });
   });
 
   // Edits to the form are saved to the recent-scans list as you go.
