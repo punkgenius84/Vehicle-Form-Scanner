@@ -27,7 +27,7 @@
         <div class="divider-text">OR USE A PHOTO</div>
         <label class="f" for="vin-photo">Photograph the VIN text on the windshield or driver-door label</label>
         <input id="vin-photo" type="file" accept="image/*" capture="environment">
-        <label class="btn ghost block" for="vin-gallery">Choose photo from gallery</label>
+        <button class="btn ghost block" id="vin-gallery-btn" type="button">Choose photo from gallery</button>
         <input id="vin-gallery" type="file" accept="image/*" hidden>
         <div class="muted">OCR is the fallback when there is no readable barcode. Recognition runs on this device; the photo is not uploaded or saved by this app.</div>
         <img id="vin-preview" class="vin-preview" alt="VIN photo preview" hidden>

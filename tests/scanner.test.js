@@ -415,3 +415,45 @@ test('VIN gallery photo: used as picked when it opens, waits for Read VIN from p
   assert.match(status(), /converted to JPEG\)\. Tap “Read VIN from photo”/);
   assert.equal(opts && opts.imageOrientation, 'from-image', 'rotation kept');
 });
+
+test('gallery button on the phone: Android picks the photo, app gets an in-memory JPEG, reads like a camera photo', async () => {
+  let reads = 0, asked = null, cancel = false;
+  const native = { recognizeText: () => { reads++; return Promise.resolve({ text: 'VIN ' + VIN }); } };
+  const { window: w } = boot({ native });
+  const d = w.document;
+  w.Capacitor.Plugins.Camera = { getPhoto: (o) => { asked = o; return cancel ? Promise.reject(new Error('User cancelled photos app')) : Promise.resolve({ dataUrl: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==', format: 'jpeg' }); } };
+  w.HTMLCanvasElement.prototype.getContext = () => ({ drawImage() {}, getImageData: (x, y, a, b) => ({ data: new Uint8ClampedArray(a * b * 4) }), putImageData() {} });
+  w.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,AAAA';
+  const RealImage = w.Image;
+  w.Image = function () { const img = new RealImage(); Object.defineProperty(img, 'naturalWidth', { value: 100 }); Object.defineProperty(img, 'naturalHeight', { value: 50 }); setTimeout(() => img.onload(), 0); return img; };
+  w.URL.createObjectURL = () => 'blob:p'; w.URL.revokeObjectURL = () => {};
+  let inputClicked = false;
+  d.querySelector('#vin-gallery').click = () => { inputClicked = true; };
+
+  click(w, d.querySelector('#vin-gallery-btn'));
+  await tick();
+  assert.equal(inputClicked, false, 'the web file picker is not used on the phone');
+  assert.equal(asked.source, 'PHOTOS'); assert.equal(asked.resultType, 'dataUrl'); assert.equal(asked.correctOrientation, true);
+  const f = w.__vin.state.vinFile;
+  assert.equal(f.type, 'image/jpeg'); assert.equal(f.size, 10, 'the JPEG bytes, in memory');
+  assert.equal(d.querySelector('#vin-preview').hidden, false);
+  assert.match(d.querySelector('#vin-ocr-status').textContent, /^Photo ready\. Tap “Read VIN from photo”/);
+  assert.equal(reads, 0, 'waits for the button');
+  click(w, d.querySelector('#vin-ocr'));
+  await tick(); await tick();
+  assert.equal(reads, 1);
+  assert.equal(val(d, 'vin'), VIN);
+
+  cancel = true;
+  click(w, d.querySelector('#vin-gallery-btn'));
+  await tick();
+  assert.equal(d.querySelector('#vin-ocr-status').textContent, 'No photo picked.');
+});
+
+test('gallery button in a plain browser falls back to the file picker', () => {
+  const { window: w } = boot();
+  let inputClicked = false;
+  w.document.querySelector('#vin-gallery').click = () => { inputClicked = true; };
+  click(w, w.document.querySelector('#vin-gallery-btn'));
+  assert.equal(inputClicked, true);
+});

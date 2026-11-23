@@ -813,6 +813,42 @@
     });
   }
 
+  // On the phone the gallery photo is fetched by Android itself (Capacitor Camera plugin: system photo picker,
+  // rotation straightened, HEIC turned into JPEG) and handed over as an ordinary JPEG kept in memory. The app's
+  // web view could not open files from the gallery picker on some phones ("The photo could not be opened").
+  function galleryPlugin() {
+    var cap = window.Capacitor;
+    return cap && cap.Plugins && cap.Plugins.Camera && typeof cap.Plugins.Camera.getPhoto === 'function' ? cap.Plugins.Camera : null;
+  }
+  function dataUrlToFile(dataUrl) {
+    var parts = String(dataUrl || '').split(','), bin = atob(parts[1] || ''), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], 'gallery.jpg', { type: 'image/jpeg' });
+  }
+  function setVinPhoto(file, note) {
+    var status = $('#vin-ocr-status'), preview = $('#vin-preview');
+    state.vinFile = file;
+    if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);
+    state.vinPreviewUrl = window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
+    state.ocrStatus = (note || 'Photo ready. ') + 'Tap “Read VIN from photo”.';
+    if (preview) { preview.src = state.vinPreviewUrl; preview.hidden = !state.vinPreviewUrl; }
+    if (status) status.textContent = state.ocrStatus;
+  }
+  function pickVinFromGallery() {
+    var plugin = galleryPlugin(), status = $('#vin-ocr-status');
+    if (!plugin) { var input = $('#vin-gallery'); if (input) input.click(); return; }   // plain browser: file picker
+    plugin.getPhoto({ source: 'PHOTOS', resultType: 'dataUrl', quality: 92, correctOrientation: true, width: 2400, height: 2400 })
+      .then(function (photo) {
+        if (!photo || !photo.dataUrl) throw new Error('No photo came back from the gallery. Try again.');
+        setVinPhoto(dataUrlToFile(photo.dataUrl));
+      })
+      .catch(function (err) {
+        var msg = err && err.message ? err.message : '';
+        state.ocrStatus = /cancel/i.test(msg) ? 'No photo picked.' : (msg || 'Could not get the photo from the gallery.');
+        if (status) status.textContent = state.ocrStatus;
+      });
+  }
+
   /* ---------- rendering ---------- */
   function setMsg(text, isErr) {
     var m = $('#msg');
@@ -899,6 +935,7 @@
     if (t.id !== 'clear-history' && clearArmed) { clearArmed = false; renderHistory(); }
     // Same three buttons, same functions as the tow app. Only the source label for the form is noted here.
     if (t.id === 'vin-barcode-start') { pendingSource = 'Barcode scan'; return startBarcodeScan(); }
+    if (t.id === 'vin-gallery-btn') return pickVinFromGallery();
     if (t.id === 'vin-ocr') { pendingSource = 'Photo (OCR)'; return scanVinPhoto(); }
     if (t.id === 'tire-ocr') return readTirePhoto();
     if (t.id === 'vin-go') {
@@ -985,13 +1022,7 @@
     state.ocrStatus = 'Loading photo…';
     if (status) status.textContent = state.ocrStatus;
     loadPicked(picked).then(function (file) {
-      state.vinFile = file;
-      if (state.vinPreviewUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(state.vinPreviewUrl);
-      state.vinPreviewUrl = window.URL && URL.createObjectURL ? URL.createObjectURL(file) : '';
-      state.ocrStatus = (file.converted ? 'Photo ready (converted to JPEG). ' : 'Photo ready. ') + 'Tap “Read VIN from photo”.';
-      var preview = $('#vin-preview');
-      if (preview) { preview.src = state.vinPreviewUrl; preview.hidden = !state.vinPreviewUrl; }
-      if (status) status.textContent = state.ocrStatus;
+      setVinPhoto(file, file.converted ? 'Photo ready (converted to JPEG). ' : '');
     }).catch(function (err) {
       state.ocrStatus = err.message;
       if (status) status.textContent = state.ocrStatus;
